@@ -1,0 +1,284 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, including the v prefix (for example, v0.1.0)
+        required: true
+        type: string
+      web_image:
+        description: Exact tested Tallystead Web image tag or digest
+        required: true
+        default: ghcr.io/tallystead/tallystead-web:0.1.0
+        type: string
+      prerelease:
+        description: Mark the draft as a prerelease
+        required: true
+        default: true
+        type: boolean
+      confirm_release_checklist:
+        description: I recorded the manual and external release-checklist results
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image_tag: ${{ steps.version.outputs.image_tag }}
+      registry: ${{ steps.version.outputs.registry }}
+      web_image: ${{ steps.version.outputs.web_image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release request
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_WEB_IMAGE: ${{ inputs.web_image }}
+          CHECKLIST_CONFIRMED: ${{ inputs.confirm_release_checklist }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Releases must be dispatched from main." >&2
+            exit 1
+          fi
+          if [[ "${CHECKLIST_CONFIRMED}" != "true" ]]; then
+            echo "Record and confirm the release checklist before continuing." >&2
+            exit 1
+          fi
+          if [[ ! "${REQUESTED_VERSION}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Version must be semantic and start with v, such as v0.1.0 or v0.1.0-rc.1." >&2
+            exit 1
+          fi
+          if ! grep -Eq '^ghcr\.io/tallystead/tallystead-web:((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?)$|^ghcr\.io/tallystead/tallystead-web@sha256:[0-9a-f]{64}$' <<<"${REQUESTED_WEB_IMAGE}"; then
+            echo "Web image must be an exact ghcr.io/tallystead/tallystead-web semantic tag or sha256 digest." >&2
+            exit 1
+          fi
+          if git rev-parse --verify --quiet "refs/tags/${REQUESTED_VERSION}" >/dev/null; then
+            echo "Tag ${REQUESTED_VERSION} already exists; release versions are immutable." >&2
+            exit 1
+          fi
+          registry_owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "version=${REQUESTED_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "image_tag=${REQUESTED_VERSION#v}" >> "${GITHUB_OUTPUT}"
+          echo "registry=ghcr.io/${registry_owner}" >> "${GITHUB_OUTPUT}"
+          echo "web_image=${REQUESTED_WEB_IMAGE}" >> "${GITHUB_OUTPUT}"
+
+  quality:
+    needs: validate
+    uses: ./.github/workflows/quality.yml
+
+  security:
+    needs: validate
+    uses: ./.github/workflows/security.yml
+
+  publish-draft:
+    needs: [validate, quality, security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
+    env:
+      IMAGE_TAG: ${{ needs.validate.outputs.image_tag }}
+      REGISTRY: ${{ needs.validate.outputs.registry }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      WEB_IMAGE: ${{ needs.validate.outputs.web_image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Authenticate to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Build server images and pull the exact web image
+        run: |
+          set -euo pipefail
+          docker build --file apps/api/Dockerfile --tag tallystead-api:release .
+          docker build --file infrastructure/backup/Dockerfile --tag tallystead-backup:release .
+          docker build --file infrastructure/compose/Caddy.Dockerfile --tag tallystead-caddy:release .
+          docker pull "${WEB_IMAGE}"
+
+      - name: Scan API release image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tallystead-api:release
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan web release image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.WEB_IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan backup release image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tallystead-backup:release
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan Caddy release image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tallystead-caddy:release
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Generate release SBOMs
+        run: mkdir -p release-artifacts
+      - name: Generate API CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tallystead-api:release
+          format: cyclonedx
+          output: release-artifacts/tallystead-api.cdx.json
+      - name: Generate web CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.WEB_IMAGE }}
+          format: cyclonedx
+          output: release-artifacts/tallystead-web.cdx.json
+      - name: Generate backup CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tallystead-backup:release
+          format: cyclonedx
+          output: release-artifacts/tallystead-backup.cdx.json
+      - name: Generate Caddy CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tallystead-caddy:release
+          format: cyclonedx
+          output: release-artifacts/tallystead-caddy.cdx.json
+
+      - name: Assemble and validate the server bundle
+        run: |
+          set -euo pipefail
+          bundle="release-artifacts/tallystead-${VERSION}-server"
+          mkdir -p "${bundle}/docs"
+          cp infrastructure/compose/compose.release.yaml "${bundle}/compose.yaml"
+          cp infrastructure/compose/Caddyfile "${bundle}/Caddyfile"
+          sed \
+            -e "s/^TALLYSTEAD_VERSION=.*/TALLYSTEAD_VERSION=${IMAGE_TAG}/" \
+            -e "s#^TALLYSTEAD_IMAGE_REGISTRY=.*#TALLYSTEAD_IMAGE_REGISTRY=${REGISTRY}#" \
+            -e "s#^TALLYSTEAD_WEB_IMAGE=.*#TALLYSTEAD_WEB_IMAGE=${WEB_IMAGE}#" \
+            infrastructure/compose/.env.release.example > "${bundle}/.env.example"
+          for document in BACKUP_AND_RESTORE NETWORK_AND_CERTIFICATES PROXMOX_DEPLOYMENT RELEASE_INSTALL; do
+            sed 's#infrastructure/compose/compose.yaml#compose.yaml#g' \
+              "docs/operations/${document}.md" > "${bundle}/docs/${document}.md"
+          done
+          cp "${bundle}/.env.example" "${bundle}/.env"
+          docker compose --env-file "${bundle}/.env" --file "${bundle}/compose.yaml" config --quiet
+          rm "${bundle}/.env"
+          tar -czf "${bundle}.tar.gz" -C release-artifacts "$(basename "${bundle}")"
+          rm -rf "${bundle}"
+          (
+            cd release-artifacts
+            sha256sum *.tar.gz *.cdx.json > SHA256SUMS
+          )
+
+      - name: Confirm image version is unused
+        run: |
+          set -euo pipefail
+          for component in api backup caddy; do
+            image="${REGISTRY}/tallystead-${component}:${IMAGE_TAG}"
+            if output="$(docker manifest inspect "${image}" 2>&1)"; then
+              echo "${image} already exists; release image versions are immutable." >&2
+              exit 1
+            fi
+            if ! grep -Eqi 'manifest unknown|not found' <<<"${output}"; then
+              printf '%s\n' "${output}" >&2
+              echo "Could not safely confirm that ${image} is unused." >&2
+              exit 1
+            fi
+          done
+
+      - name: Publish immutable release images
+        id: publish
+        run: |
+          set -euo pipefail
+          publish_image() {
+            local component="$1"
+            local local_image="tallystead-${component}:release"
+            local remote_image="${REGISTRY}/tallystead-${component}:${IMAGE_TAG}"
+            docker tag "${local_image}" "${remote_image}"
+            output="$(docker push "${remote_image}")"
+            printf '%s\n' "${output}"
+            digest="$(printf '%s\n' "${output}" | awk '/digest: sha256:/{print $3}' | tail -1)"
+            if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Could not determine the published ${component} digest." >&2
+              exit 1
+            fi
+            echo "${component}_ref=${REGISTRY}/tallystead-${component}" >> "${GITHUB_OUTPUT}"
+            echo "${component}_digest=${digest}" >> "${GITHUB_OUTPUT}"
+          }
+          publish_image api
+          publish_image backup
+          publish_image caddy
+
+      - name: Attest API image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.api_ref }}
+          subject-digest: ${{ steps.publish.outputs.api_digest }}
+          push-to-registry: true
+      - name: Attest backup image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.backup_ref }}
+          subject-digest: ${{ steps.publish.outputs.backup_digest }}
+          push-to-registry: true
+      - name: Attest Caddy image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.caddy_ref }}
+          subject-digest: ${{ steps.publish.outputs.caddy_digest }}
+          push-to-registry: true
+      - name: Attest the installable bundle
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifacts/*.tar.gz
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=(release create "${VERSION}" --draft --generate-notes --target "${GITHUB_SHA}" --title "Tallystead ${VERSION}")
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}" release-artifacts/*.tar.gz release-artifacts/*.cdx.json release-artifacts/SHA256SUMS
+
+      - name: Retain release artifacts in the workflow run
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tallystead-${{ needs.validate.outputs.version }}-release
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 30

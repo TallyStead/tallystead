@@ -1,0 +1,84 @@
+name: Container Security
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/container-security.yml
+      - .github/workflows/release.yml
+      - .trivyignore.yaml
+      - apps/api/Dockerfile
+      - apps/api/pyproject.toml
+      - infrastructure/backup/**
+      - infrastructure/compose/**
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - .github/workflows/container-security.yml
+      - .github/workflows/release.yml
+      - .trivyignore.yaml
+      - apps/api/Dockerfile
+      - apps/api/pyproject.toml
+      - infrastructure/backup/**
+      - infrastructure/compose/**
+  schedule:
+    - cron: "47 8 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: ${{ matrix.name }} image
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: api
+            dockerfile: apps/api/Dockerfile
+            context: .
+            image: tallystead-api:ci
+          - name: backup
+            dockerfile: infrastructure/backup/Dockerfile
+            context: .
+            image: tallystead-backup:ci
+          - name: caddy
+            dockerfile: infrastructure/compose/Caddy.Dockerfile
+            context: .
+            image: tallystead-caddy:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build ${{ matrix.name }} release image without publishing
+        run: docker build --file "${{ matrix.dockerfile }}" --tag "${{ matrix.image }}" "${{ matrix.context }}"
+      - name: Scan ${{ matrix.name }} image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Prepare SBOM output
+        run: mkdir -p security-artifacts
+      - name: Generate ${{ matrix.name }} CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}
+          format: cyclonedx
+          output: security-artifacts/tallystead-${{ matrix.name }}.cdx.json
+      - name: Retain ${{ matrix.name }} SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tallystead-${{ matrix.name }}-sbom-${{ github.sha }}
+          path: security-artifacts/tallystead-${{ matrix.name }}.cdx.json
+          if-no-files-found: error
+          retention-days: 14

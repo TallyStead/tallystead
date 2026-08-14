@@ -1,0 +1,59 @@
+name: Feature request
+description: Propose an improvement that preserves Tallystead's local-first model.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the household problem and desired outcome. Avoid real financial or identifying information.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What household or operator need is not handled today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the result rather than prescribing an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Primary boundary
+      options:
+        - Server or financial domain
+        - Deployment or operations
+        - Import, document, email, or local AI integration
+        - Web client and server coordination
+        - Future native client support
+        - Documentation
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Local-first and privacy considerations
+      description: Explain any network connection, external service, sensitive data, permission, or AI behavior involved.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include current workarounds when applicable.
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and documentation for this request.
+          required: true
+        - label: This request does not require cloud service use for Tallystead's core operation.
+          required: true
+
