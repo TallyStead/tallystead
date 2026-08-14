@@ -1,0 +1,4 @@
+services:
+  caddy:
+    ports:
+      - "${TALLYSTEAD_HTTP_PORT:-80}:80"

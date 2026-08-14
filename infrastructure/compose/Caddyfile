@@ -1,0 +1,27 @@
+{
+	admin unix//run/tallystead-caddy/admin.sock
+	persist_config off
+}
+
+https://{$TALLYSTEAD_SERVER_HOST:localhost} {
+	tls internal
+	header {
+		-Server
+		-X-Powered-By
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+	}
+
+	@api path /v1/* /health /docs* /openapi.json
+	reverse_proxy @api api:8000 {
+		flush_interval -1
+		header_up Host {http.request.host}
+		header_up X-Tallystead-Proxy-Token {env.TALLYSTEAD_PROXY_TOKEN}
+	}
+
+	reverse_proxy web:3000
+}

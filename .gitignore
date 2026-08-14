@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+build/
+
+# Local runtime state and secrets
+.env
+.env.*
+!.env.example
+!infrastructure/compose/.env.release.example
+data/
+postgres-data/
+minio-data/
+.local/
+_internal-repo-staging/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

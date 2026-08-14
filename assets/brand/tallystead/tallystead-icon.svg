@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Tallystead icon</title>
+  <desc id="desc">A house containing ledger lines and a checkmark.</desc>
+  <path d="M28 111 128 29l48 39V51h27v39l25 21v117H28Z" fill="#E1F3EC" stroke="#193A59" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M72 104h112M72 142h103" fill="none" stroke="#237A61" stroke-width="16" stroke-linecap="round"/>
+  <path d="M72 180h60l20 20 38-43" fill="none" stroke="#237A61" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

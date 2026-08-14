@@ -1,0 +1,147 @@
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9001:9001"
+
+  api:
+    build:
+      context: ../../
+      dockerfile: apps/api/Dockerfile
+    environment:
+      TALLYSTEAD_ENV: development
+      TALLYSTEAD_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      TALLYSTEAD_OBJECT_STORE_ENDPOINT: http://minio:9000
+      TALLYSTEAD_OBJECT_STORE_ACCESS_KEY: ${MINIO_ROOT_USER}
+      TALLYSTEAD_OBJECT_STORE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      TALLYSTEAD_OBJECT_STORE_BUCKET: ${TALLYSTEAD_OBJECT_STORE_BUCKET:-tallystead-documents}
+      TALLYSTEAD_SECRET_KEY: ${API_SECRET_KEY}
+      TALLYSTEAD_ALLOWED_ORIGINS: https://${TALLYSTEAD_SERVER_HOST}:${TALLYSTEAD_HTTPS_PORT}
+      TALLYSTEAD_PUBLIC_URL: https://${TALLYSTEAD_SERVER_HOST}:${TALLYSTEAD_HTTPS_PORT}
+      TALLYSTEAD_NETWORK_CONTROLLER_ENABLED: "true"
+      TALLYSTEAD_NETWORK_ENFORCEMENT_ENABLED: "true"
+      TALLYSTEAD_PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:-${API_SECRET_KEY}}
+      TALLYSTEAD_CADDY_ADMIN_SOCKET: /run/tallystead-caddy/admin.sock
+      TALLYSTEAD_SESSION_TTL_DAYS: ${TALLYSTEAD_SESSION_TTL_DAYS:-30}
+      TALLYSTEAD_SESSION_IDLE_MINUTES: ${TALLYSTEAD_SESSION_IDLE_MINUTES:-1440}
+      TALLYSTEAD_SESSION_TOUCH_MINUTES: ${TALLYSTEAD_SESSION_TOUCH_MINUTES:-5}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../../data/backups:/backups:ro
+      - caddy-admin:/run/tallystead-caddy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  worker:
+    build:
+      context: ../../
+      dockerfile: apps/api/Dockerfile
+    entrypoint: ["python", "-m", "app.worker"]
+    environment:
+      TALLYSTEAD_ENV: development
+      TALLYSTEAD_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      TALLYSTEAD_OBJECT_STORE_ENDPOINT: http://minio:9000
+      TALLYSTEAD_OBJECT_STORE_ACCESS_KEY: ${MINIO_ROOT_USER}
+      TALLYSTEAD_OBJECT_STORE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      TALLYSTEAD_OBJECT_STORE_BUCKET: ${TALLYSTEAD_OBJECT_STORE_BUCKET:-tallystead-documents}
+      TALLYSTEAD_SECRET_KEY: ${API_SECRET_KEY}
+      TALLYSTEAD_PUBLIC_URL: https://${TALLYSTEAD_SERVER_HOST}:${TALLYSTEAD_HTTPS_PORT}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: ${TALLYSTEAD_WEB_IMAGE:-ghcr.io/tallystead/tallystead-web:0.1.0}
+    pull_policy: missing
+    depends_on:
+      - api
+    environment:
+      NEXT_TELEMETRY_DISABLED: "1"
+
+  caddy:
+    build:
+      context: ../../
+      dockerfile: infrastructure/compose/Caddy.Dockerfile
+    environment:
+      TALLYSTEAD_SERVER_HOST: ${TALLYSTEAD_SERVER_HOST}
+      TALLYSTEAD_PROXY_TOKEN: ${PROXY_SHARED_SECRET:-${API_SECRET_KEY}}
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+    ports:
+      - "${TALLYSTEAD_HTTPS_PORT}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-admin:/run/tallystead-caddy
+
+  backup:
+    build:
+      context: ../../
+      dockerfile: infrastructure/backup/Dockerfile
+    profiles: ["tools"]
+    entrypoint: ["/opt/tallystead/backup.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TALLYSTEAD_BACKUP_AGE_RECIPIENT: ${TALLYSTEAD_BACKUP_AGE_RECIPIENT:-}
+      TALLYSTEAD_BACKUP_AGE_IDENTITY_FILE: /keys/identity.txt
+      TALLYSTEAD_BACKUP_RETENTION_COUNT: ${TALLYSTEAD_BACKUP_RETENTION_COUNT:-0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../backup:/opt/tallystead:ro
+      - ../../data/backups:/backups
+      - ../../data/backup-keys:/keys:ro
+      - minio-data:/minio-data
+
+  backup-keygen:
+    build:
+      context: ../../
+      dockerfile: infrastructure/backup/Dockerfile
+    profiles: ["tools"]
+    entrypoint: ["/opt/tallystead/generate-key.sh"]
+    environment:
+      TALLYSTEAD_BACKUP_AGE_IDENTITY_FILE: /keys/identity.txt
+    volumes:
+      - ../backup:/opt/tallystead:ro
+      - ../../data/backup-keys:/keys
+
+volumes:
+  postgres-data:
+  minio-data:
+  caddy-data:
+  caddy-config:
+  caddy-admin:

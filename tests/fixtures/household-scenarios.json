@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "currencyFixtures": [
+    {"currency": "USD", "minorUnits": 123456, "displayIntent": "$1,234.56"},
+    {"currency": "CAD", "minorUnits": 7890, "displayIntent": "CA$78.90"},
+    {"currency": "MXN", "minorUnits": 450025, "displayIntent": "MX$4,500.25"}
+  ],
+  "scenarios": [
+    {
+      "id": "paycheck-to-rent",
+      "purpose": "Received income funds a dated bill instance and reserve.",
+      "currency": "USD",
+      "events": ["paycheck received", "rent reserve allocated", "rent payment matched"]
+    },
+    {
+      "id": "pending-card-charge",
+      "purpose": "A pending card charge reduces available-to-plan without becoming cash or income.",
+      "currency": "USD",
+      "events": ["card charge imported as pending", "planner recalculated"]
+    },
+    {
+      "id": "irregular-income",
+      "purpose": "An uncertain income expectation stays separate from received income and lowers forecast confidence.",
+      "currency": "USD",
+      "events": ["expected freelance income entered", "confidence marked estimate", "late income scenario recalculated"]
+    },
+    {
+      "id": "partial-bill-payment",
+      "purpose": "A bill remains partially unpaid after a linked partial payment.",
+      "currency": "CAD",
+      "events": ["bill instance created", "partial payment linked", "remaining obligation retained"]
+    },
+    {
+      "id": "explicit-shortfall",
+      "purpose": "Insufficient cash produces a visible shortfall instead of a fictional reserve.",
+      "currency": "MXN",
+      "events": ["income estimate", "essential bill due", "shortfall recorded"]
+    },
+    {
+      "id": "receipt-and-duplicate-import",
+      "purpose": "Raw import and receipt evidence are retained and an ambiguous duplicate requires review.",
+      "currency": "USD",
+      "events": ["CSV import", "receipt extraction suggestion", "duplicate candidate queued"]
+    }
+  ]
+}

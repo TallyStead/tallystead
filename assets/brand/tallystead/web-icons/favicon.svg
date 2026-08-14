@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Tallystead</title>
+  <style>
+    .house { fill: #e1f3ec; stroke: #193a59; }
+    .ledger { stroke: #237a61; }
+    @media (prefers-color-scheme: dark) {
+      .house { fill: #234d5a; stroke: #f7f4ee; }
+      .ledger { stroke: #9edbc5; }
+    }
+  </style>
+  <path class="house" d="M28 111 128 29l48 39V51h27v39l25 21v117H28Z" stroke-width="16" stroke-linejoin="round"/>
+  <path class="ledger" d="M72 104h112M72 142h103" fill="none" stroke-width="16" stroke-linecap="round"/>
+  <path class="ledger" d="M72 180h60l20 20 38-43" fill="none" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
