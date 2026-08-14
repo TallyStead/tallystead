@@ -1,0 +1,10 @@
+misconfigurations:
+  - id: AVD-DS-0002
+    paths:
+      - apps/api/Dockerfile
+      - infrastructure/backup/Dockerfile
+      - infrastructure/compose/Caddy.Dockerfile
+    statement: >-
+      Reviewed as SE-002 in docs/security/SECURITY_EXCEPTIONS.md. These processes require
+      the shared root-only Caddy control socket or operator-owned recovery volumes.
+    expired_at: 2026-09-14
