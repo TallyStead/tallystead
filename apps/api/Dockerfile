@@ -1,7 +1,7 @@
 # The API and Caddy share a root-owned, mode-0200 Unix administration socket.
 # Splitting that controller into a dedicated least-privilege sidecar is tracked
 # as the remediation; changing only this USER would silently break rollback.
-FROM python:3.12-slim@sha256:dd29372629eeba2dd003fd9e9d35a5b8236c44727875a0364254b5127af88e65
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
 
 WORKDIR /app
 COPY apps/api/pyproject.toml ./pyproject.toml
