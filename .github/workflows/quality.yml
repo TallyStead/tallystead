@@ -43,6 +43,29 @@ jobs:
       - run: ruff check .
       - run: pytest
 
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: packages/contracts/package-lock.json
+      - run: pip install ./apps/api
+      - run: npm ci --prefix packages/contracts
+      - run: python scripts/export_openapi.py --check
+      - run: npm run generate --prefix packages/contracts
+      - run: git diff --exit-code -- packages/contracts/src/generated/schema.ts
+      - run: npm test --prefix packages/contracts
+      - run: npm run build --prefix packages/contracts
+
   migration-upgrade:
     runs-on: ubuntu-latest
     timeout-minutes: 15
