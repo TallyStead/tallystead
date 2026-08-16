@@ -53,8 +53,8 @@ def main() -> None:
 
     if name != "Upgrade path fixture":
         raise SystemExit("Seeded household did not survive the migration")
-    if current != "20260814_0022":
-        raise SystemExit(f"Expected migration head 20260814_0022, found {current}")
+    if current != "20260815_0025":
+        raise SystemExit(f"Expected migration head 20260815_0025, found {current}")
     if "last_seen_at" not in session_columns:
         raise SystemExit("Current session idle-tracking schema is missing")
     print(f"Upgrade path passed: {START_REVISION} -> {current}; seeded household preserved.")

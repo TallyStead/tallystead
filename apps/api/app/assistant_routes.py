@@ -151,7 +151,8 @@ def _learn_rule(db: DbSession, membership: Membership, actor: User, suggestion: 
         rule.is_active = True
         rule.source_suggestion_id = suggestion.id
     else:
-        db.add(CategoryRule(household_id=membership.household_id, category_id=category_id, match_type=match_type, match_value=match_value, direction=direction, source_suggestion_id=suggestion.id, created_by_user_id=actor.id))
+        label = (transaction.payee or transaction.raw_payee or "New category").strip()
+        db.add(CategoryRule(household_id=membership.household_id, category_id=category_id, match_type=match_type, match_value=match_value, rule_name=f"{label} rule", direction=direction, source_suggestion_id=suggestion.id, created_by_user_id=actor.id))
 
 
 def decide_suggestion(db: DbSession, membership: Membership, actor: User, suggestion: CategorySuggestion, request: SuggestionDecisionRequest, commit: bool = True) -> dict:

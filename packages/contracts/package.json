@@ -1,0 +1,49 @@
+{
+  "name": "@tallystead/contracts",
+  "version": "0.2.0",
+  "description": "Generated OpenAPI contract and typed client for Tallystead servers",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "openapi",
+    "README.md"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./openapi": "./openapi/tallystead-v1.json"
+  },
+  "scripts": {
+    "generate": "openapi-typescript openapi/tallystead-v1.json --alphabetize --output src/generated/schema.ts",
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "npm run typecheck",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tallystead/tallystead.git",
+    "directory": "packages/contracts"
+  },
+  "dependencies": {
+    "openapi-fetch": "0.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -105,6 +105,8 @@ def _period(db: Session, household_id: UUID, filters: ReportFilters) -> dict:
             classification = "debt_payment"
             report_amount = abs(filtered_amount)
             totals["debt_payments_minor"] += report_amount
+            totals["spending_minor"] += report_amount
+            month_totals[item.transaction_date.strftime("%Y-%m")] += report_amount
         elif item.activity_type in INVESTMENT_TYPES:
             classification = "investment_activity"
             totals["investment_activity_minor"] += filtered_amount
@@ -127,8 +129,8 @@ def _period(db: Session, household_id: UUID, filters: ReportFilters) -> dict:
         counts["included"] += 1
         if not item_splits and classification in {"spending", "refund", "income"}:
             counts["uncategorized"] += 1
-        if classification in {"spending", "refund"}:
-            sign = 1 if classification == "spending" else -1
+        if classification in {"spending", "refund", "debt_payment"}:
+            sign = -1 if classification == "refund" else 1
             relevant = expense_splits
             if filters.category_id:
                 relevant = [(split, category) for split, category in relevant if split.category_id == filters.category_id]
@@ -222,7 +224,7 @@ def spending_report(db: Session, household_id: UUID, filters: ReportFilters) -> 
         "semantics": [
             "Transfers, voids, reversed originals, and reversal legs are excluded.",
             "Refunds with expense-category evidence reduce spending.",
-            "Debt payments and investment activity affect cash flow but are not counted as spending or income.",
+            "Debt payments count as categorized household spending and are also shown as debt activity; only confirmed principal reduces the tracked debt balance.",
             "Every result is limited to one currency; no exchange rate is implied.",
         ],
     }

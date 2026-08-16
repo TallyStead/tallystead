@@ -11,8 +11,8 @@ from urllib.parse import quote
 from urllib.request import urlopen
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import delete, func, select, text
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from sqlalchemy import delete, func, or_, select, text
 
 from app.automation import (
     ensure_mapping_version,
@@ -21,6 +21,7 @@ from app.automation import (
     recompute_pending_rows,
     record_applied_decision,
 )
+from app.categorization import ai_import_proposals
 from app.config import settings
 from app.demo_household import create_demo_household
 from app.dependencies import (
@@ -60,7 +61,9 @@ from app.models import (
     Document,
     DocumentExtraction,
     DocumentMatch,
+    ExternalIdentity,
     FinancialAccount,
+    FinancialGoal,
     Household,
     ImportBatch,
     ImportRow,
@@ -92,12 +95,13 @@ from app.net_worth import (
     latest_valuation,
     validate_planner_eligibility,
 )
-from app.networking import canonical_url
+from app.networking import active_configuration, canonical_url, trusted_forward_auth_source
 from app.object_store import get_object, put_object, remove_object
 from app.obligations import (
     bill_instance_response,
     income_event_response,
     next_occurrence,
+    recalculate_debt_balance,
     transaction_linked_total,
     validate_range,
 )
@@ -121,6 +125,7 @@ from app.schemas import (
     BillProfileCreateRequest,
     BillProfileResponse,
     BillProfileUpdateRequest,
+    BulkCreateImportedTransactionsRequest,
     CalendarItemResponse,
     CategoryCreateRequest,
     CategoryResponse,
@@ -146,6 +151,7 @@ from app.schemas import (
     FinancialAccountUpdateRequest,
     GenerationResponse,
     ImportBatchResponse,
+    ImportCategorySuggestionRequest,
     ImportSourceRequest,
     ImportSourceResponse,
     IncomeEventCreateRequest,
@@ -158,6 +164,7 @@ from app.schemas import (
     IntegrationStatusResponse,
     IntegrationTestResponse,
     LedgerTransactionCreateRequest,
+    LedgerTransactionPageResponse,
     LedgerTransactionResponse,
     LoginRequest,
     MatchCandidateResponse,
@@ -181,11 +188,15 @@ from app.schemas import (
     PaymentLinkResponse,
     PlannerForecastResponse,
     PlannerRequest,
+    ProxyAuthStatusResponse,
+    ProxyLinkStatusResponse,
+    ProxyLoginRequest,
     ReconciliationExceptionResponse,
     ReminderUpdateRequest,
     ReportPresetCreateRequest,
     ReportPresetResponse,
     ReviewItemResponse,
+    ReviewQueuePageResponse,
     ServerIdentityResponse,
     SessionResponse,
     SessionTokenResponse,
@@ -219,14 +230,18 @@ def server_identity(db: DbSession) -> ServerIdentityResponse:
 
 
 def session_response(
-    db: DbSession, user: User, device_name: str | None, membership: Membership | None = None
+    db: DbSession,
+    user: User,
+    device_name: str | None,
+    membership: Membership | None = None,
+    method: str = "password_or_passkey_login",
 ) -> SessionResponse:
     if membership is None:
         membership = db.scalar(select(Membership).where(Membership.user_id == user.id))
     if membership is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No household membership")
     token = issue_session(db, user, device_name)
-    db.add(AuditEvent(household_id=membership.household_id, actor_user_id=user.id, action="auth.session_created", resource_type="session", detail="password_or_passkey_login"))
+    db.add(AuditEvent(household_id=membership.household_id, actor_user_id=user.id, action="auth.session_created", resource_type="session", detail=method))
     db.commit()
     return SessionResponse(access_token=token, user_id=user.id, household_id=membership.household_id, role=membership.role)
 
@@ -280,6 +295,79 @@ def login(request: LoginRequest, db: DbSession) -> SessionResponse:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     db.execute(delete(LoginAttempt).where(LoginAttempt.email == email))
     return session_response(db, user, request.device_name)
+
+
+def forwarded_pangolin_identity(request: Request, db: DbSession) -> tuple[str, str, str | None] | None:
+    effective = getattr(request.state, "effective_request", None)
+    if effective is None or not effective.forwarded_headers_trusted:
+        return None
+    source = request.headers.get("x-tallystead-forward-auth-source")
+    if not trusted_forward_auth_source(source, active_configuration(db)):
+        return None
+    subject = (request.headers.get("x-tallystead-forward-auth-subject") or "").strip()
+    email = (request.headers.get("x-tallystead-forward-auth-email") or "").strip().lower()
+    display_name = (request.headers.get("x-tallystead-forward-auth-name") or "").strip() or None
+    if not subject or not email or "@" not in email or len(subject) > 320 or len(email) > 320:
+        return None
+    return subject, email, display_name[:120] if display_name else None
+
+
+@router.get("/auth/proxy/status", response_model=ProxyAuthStatusResponse, tags=["auth"])
+def proxy_auth_status(request: Request, db: DbSession) -> ProxyAuthStatusResponse:
+    identity = forwarded_pangolin_identity(request, db)
+    if identity is None:
+        return ProxyAuthStatusResponse(available=False)
+    _, email, display_name = identity
+    return ProxyAuthStatusResponse(available=True, email=email, display_name=display_name)
+
+
+@router.post("/auth/proxy/login", response_model=SessionResponse, tags=["auth"])
+def proxy_auth_login(request_data: ProxyLoginRequest, request: Request, db: DbSession) -> SessionResponse:
+    forwarded = forwarded_pangolin_identity(request, db)
+    if forwarded is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Trusted Pangolin identity is unavailable")
+    subject, email, _ = forwarded
+    identity = db.scalar(select(ExternalIdentity).where(ExternalIdentity.provider == "pangolin", ExternalIdentity.subject == subject))
+    if identity is not None:
+        user = db.get(User, identity.user_id)
+        if user is None or not user.is_active or identity.email_at_link != email or user.email != email:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pangolin identity no longer matches an active Tallystead member")
+        identity.last_used_at = utc_now()
+        membership = db.scalar(select(Membership).where(Membership.user_id == user.id))
+    else:
+        user = db.scalar(select(User).where(User.email == email, User.is_active.is_(True)))
+        membership = db.scalar(select(Membership).where(Membership.user_id == user.id)) if user else None
+        if user is None or membership is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pangolin identity is not linked to an active Tallystead household member")
+        existing_user_link = db.scalar(select(ExternalIdentity).where(ExternalIdentity.provider == "pangolin", ExternalIdentity.user_id == user.id))
+        if existing_user_link is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This Tallystead member is already linked to a different Pangolin identity")
+        identity = ExternalIdentity(user_id=user.id, provider="pangolin", subject=subject, email_at_link=email)
+        db.add(identity)
+        db.flush()
+        db.add(AuditEvent(household_id=membership.household_id, actor_user_id=user.id, action="auth.external_identity_linked", resource_type="external_identity", resource_id=str(identity.id), detail="provider:pangolin;existing_member:true"))
+    if membership is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No household membership")
+    return session_response(db, user, request_data.device_name or "Web browser · Pangolin", membership, "pangolin_forward_auth")
+
+
+@router.get("/auth/proxy/link", response_model=ProxyLinkStatusResponse, tags=["auth"])
+def proxy_link_status(db: DbSession, user: Annotated[User, Depends(current_user)]) -> ProxyLinkStatusResponse:
+    identity = db.scalar(select(ExternalIdentity).where(ExternalIdentity.provider == "pangolin", ExternalIdentity.user_id == user.id))
+    if identity is None:
+        return ProxyLinkStatusResponse(linked=False)
+    return ProxyLinkStatusResponse(linked=True, provider=identity.provider, email_at_link=identity.email_at_link, created_at=identity.created_at.isoformat(), last_used_at=identity.last_used_at.isoformat())
+
+
+@router.delete("/auth/proxy/link", status_code=status.HTTP_204_NO_CONTENT, tags=["auth"])
+def remove_proxy_link(db: DbSession, actor: Annotated[User, Depends(current_user)], membership: Annotated[Membership, Depends(current_membership)]) -> None:
+    identity = db.scalar(select(ExternalIdentity).where(ExternalIdentity.provider == "pangolin", ExternalIdentity.user_id == actor.id))
+    if identity is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pangolin identity link not found")
+    identity_id = identity.id
+    db.delete(identity)
+    db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="auth.external_identity_unlinked", resource_type="external_identity", resource_id=str(identity_id), detail="provider:pangolin"))
+    db.commit()
 
 
 @router.post("/auth/password-reset/request", status_code=status.HTTP_204_NO_CONTENT, tags=["auth"])
@@ -790,6 +878,42 @@ def update_financial_account(
     return financial_account_response(db, account)
 
 
+@router.delete("/ledger/accounts/{account_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["ledger"])
+def delete_empty_financial_account(
+    account_id: UUID,
+    db: DbSession,
+    actor: Annotated[User, Depends(current_user)],
+    membership: Annotated[Membership, Depends(ledger_writer)],
+) -> Response:
+    account = household_account(db, membership.household_id, account_id)
+    references = (
+        ("transactions", LedgerTransaction, LedgerTransaction.account_id),
+        ("valuations", AccountValuation, AccountValuation.account_id),
+        ("import sources", ImportSource, ImportSource.account_id),
+        ("documents", Document, Document.account_id),
+        ("debts", Debt, Debt.account_id),
+        ("automation rules", CategoryRule, CategoryRule.account_id),
+        ("financial goals", FinancialGoal, FinancialGoal.linked_account_id),
+    )
+    blockers = [
+        label
+        for label, model, field in references
+        if db.scalar(select(func.count()).select_from(model).where(field == account.id))
+    ]
+    if account.opening_balance_minor != 0:
+        blockers.insert(0, "an opening balance")
+    if blockers:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This account cannot be deleted because it has {', '.join(blockers)}. Archive it to preserve financial history.",
+        )
+    account_name = account.name
+    db.delete(account)
+    db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="ledger.account_deleted", resource_type="financial_account", resource_id=str(account.id), detail=f"name:{account_name};empty_account:true"))
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/ledger/accounts/{account_id}/valuations", response_model=AccountValuationResponse, status_code=201, tags=["ledger"])
 def create_account_valuation(account_id: UUID, request: AccountValuationCreateRequest, db: DbSession, actor: Annotated[User, Depends(current_user)], membership: Annotated[Membership, Depends(ledger_writer)]) -> AccountValuationResponse:
     account = household_account(db, membership.household_id, account_id)
@@ -945,6 +1069,118 @@ def list_ledger_transactions(
         query = query.where(LedgerTransaction.account_id == account_id)
     transactions = db.scalars(query.order_by(LedgerTransaction.transaction_date.desc(), LedgerTransaction.created_at.desc()).limit(500)).all()
     return [transaction_response(db, item) for item in transactions]
+
+
+@router.get("/ledger/transactions/page", response_model=LedgerTransactionPageResponse, tags=["ledger"])
+def page_ledger_transactions(
+    db: DbSession,
+    membership: Annotated[Membership, Depends(current_membership)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=10, le=100)] = 25,
+    search: Annotated[str | None, Query(max_length=200)] = None,
+    account_id: UUID | None = None,
+    category_id: UUID | None = None,
+    transaction_status: Annotated[str | None, Query(pattern="^(pending|posted|voided)$")] = None,
+    direction: Annotated[str | None, Query(pattern="^(inflow|outflow)$")] = None,
+    currency_code: Annotated[str | None, Query(min_length=3, max_length=3)] = None,
+    amount_minor: int | None = None,
+    exclude_account_id: UUID | None = None,
+    exclude_transaction_id: UUID | None = None,
+    has_transfer: bool | None = None,
+    has_splits: bool | None = None,
+    reconciled: bool | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> LedgerTransactionPageResponse:
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Start date cannot be after end date")
+    query = select(LedgerTransaction).where(LedgerTransaction.household_id == membership.household_id)
+    if account_id:
+        household_account(db, membership.household_id, account_id)
+        query = query.where(LedgerTransaction.account_id == account_id)
+    if category_id:
+        category = db.get(Category, category_id)
+        if not category or category.household_id != membership.household_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+        query = query.where(
+            LedgerTransaction.id.in_(select(TransactionSplit.transaction_id).where(TransactionSplit.category_id == category_id))
+        )
+    if transaction_status:
+        query = query.where(LedgerTransaction.status == transaction_status)
+    if direction == "inflow":
+        query = query.where(LedgerTransaction.amount_minor > 0)
+    elif direction == "outflow":
+        query = query.where(LedgerTransaction.amount_minor < 0)
+    if currency_code:
+        query = query.where(LedgerTransaction.currency_code == currency_code.upper())
+    if amount_minor is not None:
+        query = query.where(LedgerTransaction.amount_minor == amount_minor)
+    if exclude_account_id:
+        household_account(db, membership.household_id, exclude_account_id)
+        query = query.where(LedgerTransaction.account_id != exclude_account_id)
+    if exclude_transaction_id:
+        query = query.where(LedgerTransaction.id != exclude_transaction_id)
+    transfer_exists = select(TransferLink.id).where(
+        (TransferLink.from_transaction_id == LedgerTransaction.id) | (TransferLink.to_transaction_id == LedgerTransaction.id)
+    ).exists()
+    if has_transfer is True:
+        query = query.where(transfer_exists)
+    elif has_transfer is False:
+        query = query.where(~transfer_exists)
+    split_exists = select(TransactionSplit.id).where(TransactionSplit.transaction_id == LedgerTransaction.id).exists()
+    if has_splits is True:
+        query = query.where(split_exists)
+    elif has_splits is False:
+        query = query.where(~split_exists)
+    if reconciled is True:
+        query = query.where(LedgerTransaction.reconciled_at.is_not(None))
+    elif reconciled is False:
+        query = query.where(LedgerTransaction.reconciled_at.is_(None))
+    if date_from:
+        query = query.where(LedgerTransaction.transaction_date >= date_from)
+    if date_to:
+        query = query.where(LedgerTransaction.transaction_date <= date_to)
+    term = (search or "").strip().casefold()
+    if term:
+        pattern = f"%{term}%"
+        account_matches = select(FinancialAccount.id).where(
+            FinancialAccount.household_id == membership.household_id,
+            func.lower(FinancialAccount.name).like(pattern),
+        )
+        merchant_matches = select(Merchant.id).where(
+            Merchant.household_id == membership.household_id,
+            func.lower(Merchant.name).like(pattern),
+        )
+        category_transactions = select(TransactionSplit.transaction_id).join(Category, Category.id == TransactionSplit.category_id).where(
+            Category.household_id == membership.household_id,
+            func.lower(Category.name).like(pattern),
+        )
+        query = query.where(
+            or_(
+                func.lower(func.coalesce(LedgerTransaction.payee, "")).like(pattern),
+                func.lower(func.coalesce(LedgerTransaction.raw_payee, "")).like(pattern),
+                func.lower(func.coalesce(LedgerTransaction.memo, "")).like(pattern),
+                func.lower(func.coalesce(LedgerTransaction.source_type, "")).like(pattern),
+                LedgerTransaction.account_id.in_(account_matches),
+                LedgerTransaction.merchant_id.in_(merchant_matches),
+                LedgerTransaction.id.in_(category_transactions),
+            )
+        )
+    total_items = int(db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0)
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    effective_page = min(page, total_pages)
+    transactions = db.scalars(
+        query.order_by(LedgerTransaction.transaction_date.desc(), LedgerTransaction.created_at.desc(), LedgerTransaction.id.desc())
+        .offset((effective_page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return LedgerTransactionPageResponse(
+        items=[transaction_response(db, item) for item in transactions],
+        page=effective_page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=total_pages,
+    )
 
 
 @router.post("/ledger/transactions", response_model=LedgerTransactionResponse, status_code=status.HTTP_201_CREATED, tags=["ledger"])
@@ -1345,7 +1581,7 @@ def income_source_response(item: IncomeSource) -> IncomeSourceResponse:
 
 
 def debt_response(item: Debt) -> DebtResponse:
-    return DebtResponse(debt_id=item.id, name=item.name, lender=item.lender, account_id=item.account_id, balance_minor=item.balance_minor, apr_basis_points=item.apr_basis_points, minimum_payment_minor=item.minimum_payment_minor, due_day=item.due_day, next_due_date=item.next_due_date, currency_code=item.currency_code, is_active=item.is_active)
+    return DebtResponse(debt_id=item.id, name=item.name, lender=item.lender, account_id=item.account_id, balance_minor=item.balance_minor, balance_anchor_minor=item.balance_anchor_minor if item.balance_anchor_minor is not None else item.balance_minor, balance_as_of_date=item.balance_as_of_date, apr_basis_points=item.apr_basis_points, minimum_payment_minor=item.minimum_payment_minor, due_day=item.due_day, next_due_date=item.next_due_date, currency_code=item.currency_code, is_active=item.is_active)
 
 
 @obligations_router.get("/obligations/bill-profiles", response_model=list[BillProfileResponse], tags=["obligations"])
@@ -1420,7 +1656,8 @@ def create_debt(request: DebtCreateRequest, db: DbSession, actor: Annotated[User
         account = household_account(db, membership.household_id, request.account_id)
         if account.currency_code != request.currency_code:
             raise HTTPException(status_code=422, detail="Debt and related account currencies must match")
-    item = Debt(household_id=membership.household_id, **(request.model_dump() | {"name": request.name.strip()}))
+    values = request.model_dump()
+    item = Debt(household_id=membership.household_id, balance_anchor_minor=request.balance_minor, **(values | {"name": request.name.strip()}))
     db.add(item); db.flush(); db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="obligation.debt_created", resource_type="debt", resource_id=str(item.id)))
     response = debt_response(item); db.commit(); return response
 
@@ -1439,6 +1676,8 @@ def update_debt(debt_id: UUID, request: DebtUpdateRequest, db: DbSession, actor:
         duplicate = db.scalar(select(Debt).where(Debt.household_id == membership.household_id, Debt.name == changes["name"], Debt.id != item.id))
         if duplicate:
             raise HTTPException(status_code=409, detail="A debt with this name already exists")
+    if "balance_minor" in changes:
+        item.balance_anchor_minor = changes["balance_minor"]
     account_id = changes.get("account_id", item.account_id)
     currency_code = changes.get("currency_code", item.currency_code)
     if account_id is not None:
@@ -1447,7 +1686,19 @@ def update_debt(debt_id: UUID, request: DebtUpdateRequest, db: DbSession, actor:
             raise HTTPException(status_code=422, detail="Debt and related account currencies must match")
     for field, value in changes.items():
         setattr(item, field, value)
+    if "balance_minor" in changes or "balance_as_of_date" in changes:
+        recalculate_debt_balance(db, item)
     db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="obligation.debt_updated", resource_type="debt", resource_id=str(item.id), detail=json.dumps(changes, default=str)))
+    db.flush(); response = debt_response(item); db.commit(); return response
+
+
+@obligations_router.post("/obligations/debts/{debt_id}/recalculate", response_model=DebtResponse, tags=["obligations"])
+def recalculate_debt(debt_id: UUID, db: DbSession, actor: Annotated[User, Depends(current_user)], membership: Annotated[Membership, Depends(ledger_writer)]) -> DebtResponse:
+    item = db.scalar(select(Debt).where(Debt.id == debt_id, Debt.household_id == membership.household_id))
+    if not item:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    principal = recalculate_debt_balance(db, item)
+    db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="obligation.debt_recalculated", resource_type="debt", resource_id=str(item.id), detail=f"anchor:{item.balance_anchor_minor};as_of:{item.balance_as_of_date};principal:{principal};balance:{item.balance_minor}"))
     db.flush(); response = debt_response(item); db.commit(); return response
 
 
@@ -1590,8 +1841,18 @@ def link_bill_payment(instance_id: UUID, request: PaymentLinkRequest, db: DbSess
     if transaction.currency_code != item.currency_code: raise HTTPException(status_code=422, detail="Payment and bill currencies must match")
     if transaction_linked_total(db, transaction.id) + request.amount_minor > abs(transaction.amount_minor):
         raise HTTPException(status_code=422, detail="Applied bill payments exceed the transaction amount")
-    link = BillPaymentLink(household_id=membership.household_id, bill_instance_id=item.id, transaction_id=transaction.id, amount_minor=request.amount_minor, created_by_user_id=actor.id)
-    db.add(link); db.flush(); db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="obligation.payment_linked", resource_type="bill_payment_link", resource_id=str(link.id)))
+    principal = request.principal_amount_minor if request.principal_amount_minor is not None else request.amount_minor
+    if principal > request.amount_minor:
+        raise HTTPException(status_code=422, detail="Principal cannot exceed the linked payment amount")
+    link = BillPaymentLink(household_id=membership.household_id, bill_instance_id=item.id, transaction_id=transaction.id, amount_minor=request.amount_minor, principal_amount_minor=principal, created_by_user_id=actor.id)
+    db.add(link); db.flush()
+    if item.debt_id:
+        debt = db.get(Debt, item.debt_id)
+        if debt:
+            if debt.balance_anchor_minor is None:
+                debt.balance_anchor_minor = debt.balance_minor
+            recalculate_debt_balance(db, debt)
+    db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="obligation.payment_linked", resource_type="bill_payment_link", resource_id=str(link.id)))
     response = PaymentLinkResponse(payment_link_id=link.id, transaction_id=link.transaction_id, amount_minor=link.amount_minor); db.commit(); return response
 
 
@@ -1599,7 +1860,13 @@ def link_bill_payment(instance_id: UUID, request: PaymentLinkRequest, db: DbSess
 def unlink_bill_payment(instance_id: UUID, link_id: UUID, db: DbSession, actor: Annotated[User, Depends(current_user)], membership: Annotated[Membership, Depends(ledger_writer)]) -> None:
     link = db.scalar(select(BillPaymentLink).where(BillPaymentLink.id == link_id, BillPaymentLink.bill_instance_id == instance_id, BillPaymentLink.household_id == membership.household_id))
     if not link: raise HTTPException(status_code=404, detail="Payment link not found")
-    db.delete(link); db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="obligation.payment_unlinked", resource_type="bill_payment_link", resource_id=str(link.id))); db.commit()
+    instance = db.get(BillInstance, instance_id)
+    db.delete(link); db.flush()
+    if instance and instance.debt_id:
+        debt = db.get(Debt, instance.debt_id)
+        if debt:
+            recalculate_debt_balance(db, debt)
+    db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="obligation.payment_unlinked", resource_type="bill_payment_link", resource_id=str(link.id))); db.commit()
 
 
 @obligations_router.get("/obligations/income-events", response_model=list[IncomeEventResponse], tags=["obligations"])
@@ -1823,7 +2090,131 @@ def review_response(db: DbSession, row: ImportRow) -> ReviewItemResponse:
 def reconciliation_queue(db: DbSession, membership: Annotated[Membership, Depends(current_membership)], include_resolved: bool = False) -> list[ReviewItemResponse]:
     query=select(ImportRow).where(ImportRow.household_id == membership.household_id)
     if not include_resolved: query=query.where(ImportRow.status.in_(["ready", "unmatched", "duplicate", "invalid", "deferred"]))
-    return [review_response(db, row) for row in db.scalars(query.order_by(ImportRow.created_at, ImportRow.row_number)).all()]
+    query = query.order_by(ImportRow.transaction_date.is_(None), ImportRow.transaction_date.desc(), func.abs(ImportRow.amount_minor).desc(), ImportRow.amount_minor, ImportRow.created_at, ImportRow.row_number)
+    return [review_response(db, row) for row in db.scalars(query).all()]
+
+
+@obligations_router.get("/reconciliation/queue/page", response_model=ReviewQueuePageResponse, tags=["reconciliation"])
+def reconciliation_queue_page(
+    db: DbSession,
+    membership: Annotated[Membership, Depends(current_membership)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=10, le=100)] = 25,
+    search: Annotated[str | None, Query(max_length=200)] = None,
+    queue_kind: Annotated[str, Query(pattern="^(standard|transfer|all)$")] = "standard",
+    row_status: Annotated[str | None, Query(pattern="^(ready|unmatched|duplicate|invalid|deferred)$")] = None,
+    source_id: UUID | None = None,
+    account_id: UUID | None = None,
+    category_id: UUID | None = None,
+    direction: Annotated[str | None, Query(pattern="^(inflow|outflow)$")] = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> ReviewQueuePageResponse:
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Start date cannot be after end date")
+    query = select(ImportRow).where(
+        ImportRow.household_id == membership.household_id,
+        ImportRow.status.in_(["ready", "unmatched", "duplicate", "invalid", "deferred"]),
+    )
+    description = func.lower(func.coalesce(ImportRow.raw_payee, ImportRow.normalized_payee, ""))
+    transfer_filter = or_(
+        func.coalesce(ImportRow.automation_kind, "") == "transfer_candidate",
+        *[description.like(f"%{term}%") for term in ("transfer", "payment", "pymt", "zelle", "venmo", "cash app", "paypal", "overdraft protection", "overdraft transfer")],
+    )
+    if queue_kind == "transfer":
+        query = query.where(transfer_filter)
+    elif queue_kind == "standard":
+        query = query.where(~transfer_filter)
+    if row_status:
+        query = query.where(ImportRow.status == row_status)
+    if source_id:
+        source = db.scalar(select(ImportSource).where(ImportSource.id == source_id, ImportSource.household_id == membership.household_id))
+        if not source:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import source not found")
+        query = query.where(ImportRow.source_id == source_id)
+    if account_id:
+        household_account(db, membership.household_id, account_id)
+        source_ids = select(ImportSource.id).where(ImportSource.household_id == membership.household_id, ImportSource.account_id == account_id)
+        query = query.where(ImportRow.source_id.in_(source_ids))
+    if category_id:
+        category = db.get(Category, category_id)
+        if not category or category.household_id != membership.household_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+        query = query.where(ImportRow.proposed_category_id == category_id)
+    if direction == "inflow":
+        query = query.where(ImportRow.amount_minor >= 0)
+    elif direction == "outflow":
+        query = query.where(ImportRow.amount_minor < 0)
+    if date_from:
+        query = query.where(ImportRow.transaction_date >= date_from)
+    if date_to:
+        query = query.where(ImportRow.transaction_date <= date_to)
+    term = (search or "").strip().casefold()
+    if term:
+        pattern = f"%{term}%"
+        matching_sources = select(ImportSource.id).where(
+            ImportSource.household_id == membership.household_id,
+            func.lower(ImportSource.name).like(pattern),
+        )
+        matching_categories = select(Category.id).where(
+            Category.household_id == membership.household_id,
+            func.lower(Category.name).like(pattern),
+        )
+        query = query.where(or_(
+            func.lower(func.coalesce(ImportRow.raw_payee, "")).like(pattern),
+            func.lower(func.coalesce(ImportRow.normalized_payee, "")).like(pattern),
+            func.lower(func.coalesce(ImportRow.raw_json, "")).like(pattern),
+            func.lower(func.coalesce(ImportRow.automation_kind, "")).like(pattern),
+            func.lower(func.coalesce(ImportRow.automation_evidence, "")).like(pattern),
+            ImportRow.source_id.in_(matching_sources),
+            ImportRow.proposed_category_id.in_(matching_categories),
+        ))
+    total_items = int(db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0)
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    effective_page = min(page, total_pages)
+    rows = db.scalars(
+        query.order_by(ImportRow.transaction_date.is_(None), ImportRow.transaction_date.desc(), func.abs(ImportRow.amount_minor).desc(), ImportRow.amount_minor, ImportRow.created_at, ImportRow.row_number)
+        .offset((effective_page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return ReviewQueuePageResponse(
+        items=[review_response(db, row) for row in rows],
+        page=effective_page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=total_pages,
+    )
+
+
+@obligations_router.post("/reconciliation/rows/category-suggestions", response_model=list[ReviewItemResponse], tags=["reconciliation"])
+def suggest_import_row_categories(request: ImportCategorySuggestionRequest, db: DbSession, actor: Annotated[User, Depends(current_user)], membership: Annotated[Membership, Depends(ledger_writer)]) -> list[ReviewItemResponse]:
+    if len(set(request.row_ids)) != len(request.row_ids):
+        raise HTTPException(status_code=422, detail="Import row selection contains duplicates")
+    values = load_integrations(db)
+    if not (values.get("ai_enabled") and values.get("ai_provider") and values.get("ai_base_url")):
+        raise HTTPException(status_code=409, detail="Local AI must be enabled and configured before reviewing import rows")
+    rows = db.scalars(select(ImportRow).where(ImportRow.id.in_(request.row_ids), ImportRow.household_id == membership.household_id)).all()
+    if len(rows) != len(request.row_ids):
+        raise HTTPException(status_code=404, detail="One or more import rows were not found")
+    eligible = [row for row in rows if row.status in {"ready", "unmatched", "deferred"} and row.amount_minor is not None and row.transaction_date is not None and row.automation_kind != "transfer_candidate"]
+    if len(eligible) != len(rows):
+        raise HTTPException(status_code=409, detail="Only valid, unmatched non-transfer rows can receive category suggestions")
+    try:
+        proposals = ai_import_proposals(db, membership.household_id, eligible, values)
+    except (OSError, TimeoutError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="The local AI model could not review the selected rows") from exc
+    for row in eligible:
+        proposal = proposals.get(str(row.id))
+        if proposal:
+            row.proposed_category_id = proposal["category_id"]
+            row.automation_kind = "local_ai_category_suggestion"
+            row.automation_confidence = proposal["confidence_percent"]
+            row.automation_evidence = f"Local AI ({proposal['model_version']}): {proposal['evidence']}"
+    db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="reconciliation.ai_category_suggestions_generated", resource_type="import_row", detail=f"selected={len(rows)};suggested={len(proposals)}"))
+    db.flush()
+    responses = [review_response(db, row) for row in rows]
+    db.commit()
+    return responses
 
 
 @obligations_router.get("/reconciliation/exceptions", response_model=list[ReconciliationExceptionResponse], tags=["reconciliation"])
@@ -1883,6 +2274,26 @@ def create_transaction_from_row(row_id: UUID, request: CreateImportedTransaction
         recompute_pending_rows(db, membership.household_id)
     db.add(AuditEvent(household_id=membership.household_id, actor_user_id=actor.id, action="reconciliation.transaction_created", resource_type="import_row", resource_id=str(row.id), detail=f"transaction:{transaction.id};rule:{row.applied_rule_id};remember:{request.remember_rule}"))
     db.flush(); response=review_response(db,row).model_copy(update={"created_transaction_id": transaction.id}); db.commit(); return response
+
+
+@obligations_router.post("/reconciliation/rows/create-batch", response_model=list[ReviewItemResponse], status_code=201, tags=["reconciliation"])
+def create_transactions_from_rows(request: BulkCreateImportedTransactionsRequest, db: DbSession, actor: Annotated[User, Depends(current_user)], membership: Annotated[Membership, Depends(ledger_writer)]) -> list[ReviewItemResponse]:
+    if len(set(request.row_ids)) != len(request.row_ids):
+        raise HTTPException(status_code=422, detail="Import row selection contains duplicates")
+    category = db.scalar(select(Category).where(Category.id == request.category_id, Category.household_id == membership.household_id, Category.is_archived.is_(False)))
+    if not category:
+        raise HTTPException(status_code=422, detail="Category is unavailable")
+    rows = db.scalars(select(ImportRow).where(ImportRow.id.in_(request.row_ids), ImportRow.household_id == membership.household_id)).all()
+    if len(rows) != len(request.row_ids):
+        raise HTTPException(status_code=404, detail="One or more import rows were not found")
+    for row in rows:
+        if row.status not in {"ready", "unmatched", "deferred"} or row.transaction_date is None or row.amount_minor is None or row.automation_kind == "transfer_candidate":
+            raise HTTPException(status_code=409, detail="Only valid, unmatched non-transfer rows can be approved in bulk")
+        expected = "income" if row.amount_minor > 0 else "expense"
+        if category.category_type != expected:
+            raise HTTPException(status_code=422, detail="All selected rows must match the chosen category direction")
+    responses = [create_transaction_from_row(row.id, CreateImportedTransactionRequest(category_id=category.id, remember_rule=False), db, actor, membership) for row in rows]
+    return responses
 
 
 @obligations_router.delete("/reconciliation/rows/{row_id}/match", response_model=ReviewItemResponse, tags=["reconciliation"])

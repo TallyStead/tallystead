@@ -24,7 +24,13 @@ from app.models import (
     User,
     utc_now,
 )
-from app.plans import BABY_STEPS, PLAN_RULE_VERSION, is_mortgage, plan_projection
+from app.plans import (
+    BABY_STEPS,
+    PLAN_RULE_VERSION,
+    anchored_debt_balance,
+    is_mortgage,
+    plan_projection,
+)
 
 router = APIRouter(prefix="/v1", tags=["plans"])
 writer = require_roles(Role.OWNER, Role.MANAGER)
@@ -125,10 +131,10 @@ def create_steps(db: DbSession, plan: FinancialPlan) -> None:
         db.flush()
         goal_target = definition.get("target_minor")
         if definition["type"] == "debt":
-            total = sum(item.balance_minor for item in debts if not is_mortgage(db, item))
+            total = sum(anchored_debt_balance(item) for item in debts if not is_mortgage(db, item))
             goal_target = total or None
         elif definition["type"] == "mortgage":
-            total = sum(item.balance_minor for item in debts if is_mortgage(db, item))
+            total = sum(anchored_debt_balance(item) for item in debts if is_mortgage(db, item))
             goal_target = total or None
         db.add(FinancialGoal(household_id=plan.household_id, plan_id=plan.id, step_id=step.id, name=definition["title"], goal_type=definition["type"], target_minor=goal_target))
 

@@ -10,7 +10,7 @@ on:
       web_image:
         description: Exact tested Tallystead Web image tag or digest
         required: true
-        default: ghcr.io/tallystead/tallystead-web:0.1.0
+        default: ghcr.io/tallystead/tallystead-web:0.2.0
         type: string
       prerelease:
         description: Mark the draft as a prerelease
@@ -105,19 +105,46 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: https://npm.pkg.github.com
+          scope: "@tallystead"
+          cache: npm
+          cache-dependency-path: packages/contracts/package-lock.json
 
-      - name: Authenticate to GitHub Container Registry
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+      - name: Build and pack the API contract
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./packages/contracts/package.json').version")"
+          if [[ "${package_version}" != "${IMAGE_TAG}" ]]; then
+            echo "Contract package version ${package_version} does not match release ${IMAGE_TAG}." >&2
+            exit 1
+          fi
+          npm ci --prefix packages/contracts
+          npm run generate --prefix packages/contracts
+          git diff --exit-code -- packages/contracts/src/generated/schema.ts
+          npm test --prefix packages/contracts
+          npm run build --prefix packages/contracts
+          mkdir -p release-artifacts
+          npm pack ./packages/contracts --pack-destination release-artifacts
+          cp packages/contracts/openapi/tallystead-v1.json release-artifacts/tallystead-v1-openapi.json
 
-      - name: Build server images and pull the exact web image
+      - name: Build server images
         run: |
           set -euo pipefail
           docker build --file apps/api/Dockerfile --tag tallystead-api:release .
           docker build --file infrastructure/backup/Dockerfile --tag tallystead-backup:release .
           docker build --file infrastructure/compose/Caddy.Dockerfile --tag tallystead-caddy:release .
-          docker pull "${WEB_IMAGE}"
+
+      - name: Pull the exact public web image
+        run: |
+          set -euo pipefail
+          if ! docker pull "${WEB_IMAGE}"; then
+            echo "Could not pull ${WEB_IMAGE} anonymously." >&2
+            echo "Confirm that the selected tallystead-web package exists and has public visibility before releasing it." >&2
+            exit 1
+          fi
 
       - name: Scan API release image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -181,29 +208,45 @@ jobs:
           bundle="release-artifacts/tallystead-${VERSION}-server"
           mkdir -p "${bundle}/docs"
           cp infrastructure/compose/compose.release.yaml "${bundle}/compose.yaml"
+          cp infrastructure/compose/compose.pangolin.yaml "${bundle}/compose.pangolin.yaml"
           cp infrastructure/compose/Caddyfile "${bundle}/Caddyfile"
           sed \
             -e "s/^TALLYSTEAD_VERSION=.*/TALLYSTEAD_VERSION=${IMAGE_TAG}/" \
             -e "s#^TALLYSTEAD_IMAGE_REGISTRY=.*#TALLYSTEAD_IMAGE_REGISTRY=${REGISTRY}#" \
             -e "s#^TALLYSTEAD_WEB_IMAGE=.*#TALLYSTEAD_WEB_IMAGE=${WEB_IMAGE}#" \
             infrastructure/compose/.env.release.example > "${bundle}/.env.example"
-          for document in BACKUP_AND_RESTORE NETWORK_AND_CERTIFICATES PROXMOX_DEPLOYMENT RELEASE_INSTALL; do
-            sed 's#infrastructure/compose/compose.yaml#compose.yaml#g' \
+          for document in BACKUP_AND_RESTORE NETWORK_AND_CERTIFICATES NETWORK_CONFIGURATION_REFERENCE PROXMOX_DEPLOYMENT RELEASE_INSTALL; do
+            sed -e 's#infrastructure/compose/compose.yaml#compose.yaml#g' \
+              -e 's#infrastructure/compose/compose.pangolin.yaml#compose.pangolin.yaml#g' \
               "docs/operations/${document}.md" > "${bundle}/docs/${document}.md"
           done
           cp "${bundle}/.env.example" "${bundle}/.env"
           docker compose --env-file "${bundle}/.env" --file "${bundle}/compose.yaml" config --quiet
+          docker compose --env-file "${bundle}/.env" --file "${bundle}/compose.yaml" --file "${bundle}/compose.pangolin.yaml" config --quiet
           rm "${bundle}/.env"
           tar -czf "${bundle}.tar.gz" -C release-artifacts "$(basename "${bundle}")"
           rm -rf "${bundle}"
           (
             cd release-artifacts
-            sha256sum *.tar.gz *.cdx.json > SHA256SUMS
+            sha256sum *.tar.gz *.tgz *.json > SHA256SUMS
           )
 
-      - name: Confirm image version is unused
+      - name: Confirm artifact versions are unused
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          if output="$(npm view "@tallystead/contracts@${IMAGE_TAG}" version --registry=https://npm.pkg.github.com 2>&1)"; then
+            echo "@tallystead/contracts@${IMAGE_TAG} already exists; package versions are immutable." >&2
+            exit 1
+          fi
+          if ! grep -Eqi 'E404|not found' <<<"${output}"; then
+            printf '%s\n' "${output}" >&2
+            echo "Could not safely confirm that @tallystead/contracts@${IMAGE_TAG} is unused." >&2
+            exit 1
+          fi
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
           for component in api backup caddy; do
             image="${REGISTRY}/tallystead-${component}:${IMAGE_TAG}"
             if output="$(docker manifest inspect "${image}" 2>&1)"; then
@@ -240,6 +283,12 @@ jobs:
           publish_image backup
           publish_image caddy
 
+      - name: Publish immutable API contract package
+        working-directory: packages/contracts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish
+
       - name: Attest API image provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -262,6 +311,10 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: release-artifacts/*.tar.gz
+      - name: Attest the API contract package archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifacts/*.tgz
 
       - name: Create draft GitHub release
         env:
@@ -273,7 +326,7 @@ jobs:
           if [[ "${IS_PRERELEASE}" == "true" ]]; then
             args+=(--prerelease)
           fi
-          gh "${args[@]}" release-artifacts/*.tar.gz release-artifacts/*.cdx.json release-artifacts/SHA256SUMS
+          gh "${args[@]}" release-artifacts/*.tar.gz release-artifacts/*.tgz release-artifacts/tallystead-v1-openapi.json release-artifacts/*.cdx.json release-artifacts/SHA256SUMS
 
       - name: Retain release artifacts in the workflow run
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

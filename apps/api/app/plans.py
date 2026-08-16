@@ -3,13 +3,11 @@ import math
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ledger import account_balance
 from app.models import (
-    BillInstance,
-    BillPaymentLink,
     Debt,
     FinancialAccount,
     FinancialGoal,
@@ -41,8 +39,11 @@ def is_mortgage(db: Session, debt: Debt) -> bool:
 
 
 def current_debt_balance(db: Session, debt: Debt) -> int:
-    paid = db.scalar(select(func.coalesce(func.sum(BillPaymentLink.amount_minor), 0)).join(BillInstance, BillInstance.id == BillPaymentLink.bill_instance_id).where(BillInstance.debt_id == debt.id)) or 0
-    return max(0, debt.balance_minor - paid)
+    return debt.balance_minor
+
+
+def anchored_debt_balance(debt: Debt) -> int:
+    return debt.balance_anchor_minor if debt.balance_anchor_minor is not None else debt.balance_minor
 
 
 def observed_monthly(db: Session, household_id, currency_code: str, as_of: date) -> tuple[int, int]:
@@ -72,9 +73,9 @@ def resolved_target(db: Session, step: PlanStep, goal: FinancialGoal, monthly_sp
     if step.target_minor is not None:
         return step.target_minor, "Plan-step target"
     if step.step_type == "debt":
-        return sum(current_debt_balance(db, item) for item in debts if not is_mortgage(db, item)), "Current active non-mortgage debt balances"
+        return sum(anchored_debt_balance(item) for item in debts if not is_mortgage(db, item)), "Dated starting non-mortgage debt balances"
     if step.step_type == "mortgage":
-        return sum(current_debt_balance(db, item) for item in debts if is_mortgage(db, item)), "Current active mortgage balances"
+        return sum(anchored_debt_balance(item) for item in debts if is_mortgage(db, item)), "Dated starting mortgage balances"
     if step.step_type == "emergency_months":
         return monthly_spending * (step.target_months or 3), f"{step.target_months or 3} × observed average monthly spending"
     if step.step_type == "income_percentage":

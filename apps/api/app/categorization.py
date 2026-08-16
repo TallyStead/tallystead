@@ -102,6 +102,52 @@ Allowed categories: {', '.join(category.name for category in categories)}"""
     return _proposal(category, item.amount_minor, confidence, [str(result.get("explanation") or "Local model suggestion; review required.")], provider, model)
 
 
+def ai_import_proposals(db: Session, household_id: UUID, rows: list[object], values: dict) -> dict[str, dict]:
+    """Ask the configured household-local model for reviewable import-row category proposals."""
+    categories = db.scalars(select(Category).where(Category.household_id == household_id, Category.is_archived.is_(False)).order_by(Category.category_type, Category.name)).all()
+    if not categories or not rows:
+        return {}
+    provider = values.get("ai_provider")
+    base_url = str(values.get("ai_base_url") or "").rstrip("/")
+    model = values.get("ai_model") or ("llama3.2" if provider == "ollama" else "local-model")
+    allowed = {"income": [item.name for item in categories if item.category_type == "income"], "expense": [item.name for item in categories if item.category_type == "expense"]}
+    row_payload = [{"row_id": str(row.id), "payee": row.normalized_payee or row.raw_payee or "unknown", "signed_minor_units": row.amount_minor, "currency": row.currency_code, "direction": "income" if row.amount_minor > 0 else "expense"} for row in rows]
+    prompt = f"""Review these imported financial rows and suggest exactly one allowed category for each. Return strict JSON only as an object with a suggestions array. Each suggestion must contain row_id, category_name, confidence_percent (0-100), and explanation. Do not propose or perform ledger actions. Omit a row when evidence is insufficient.
+Allowed categories by direction: {json.dumps(allowed, sort_keys=True)}
+Rows: {json.dumps(row_payload, sort_keys=True)}"""
+    if provider == "ollama":
+        endpoint = f"{base_url}/api/chat"
+        body = {"model": model, "stream": False, "format": "json", "messages": [{"role": "user", "content": prompt}]}
+    else:
+        endpoint = f"{base_url}/v1/chat/completions"
+        body = {"model": model, "temperature": 0, "messages": [{"role": "user", "content": prompt}]}
+    request = Request(endpoint, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}, method="POST")
+    with build_opener(_NoRedirect).open(request, timeout=45) as response:
+        payload = json.loads(response.read().decode())
+    content = payload.get("message", {}).get("content") if provider == "ollama" else payload.get("choices", [{}])[0].get("message", {}).get("content")
+    result = _json_content(content or "{}")
+    row_map = {str(row.id): row for row in rows}
+    category_map = {(item.category_type, item.name.casefold()): item for item in categories}
+    proposals: dict[str, dict] = {}
+    for suggestion in result.get("suggestions", []):
+        if not isinstance(suggestion, dict):
+            continue
+        row_id = str(suggestion.get("row_id") or "")
+        row = row_map.get(row_id)
+        if row is None:
+            continue
+        direction = "income" if row.amount_minor > 0 else "expense"
+        category = category_map.get((direction, str(suggestion.get("category_name") or "").strip().casefold()))
+        if category is None:
+            continue
+        try:
+            confidence = max(0, min(100, int(suggestion.get("confidence_percent") or 0)))
+        except (TypeError, ValueError):
+            confidence = 0
+        proposals[row_id] = {"category_id": category.id, "category_name": category.name, "confidence_percent": confidence, "evidence": str(suggestion.get("explanation") or "Local model suggestion; review required.")[:2000], "provider": provider, "model_version": model}
+    return proposals
+
+
 def suggestion_candidates(db: Session, household_id: UUID) -> list[LedgerTransaction]:
     existing = set(db.scalars(select(CategorySuggestion.transaction_id).where(CategorySuggestion.household_id == household_id, CategorySuggestion.status == "pending")).all())
     split_ids = set(db.scalars(select(TransactionSplit.transaction_id)).all())

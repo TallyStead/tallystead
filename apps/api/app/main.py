@@ -41,7 +41,7 @@ async def lifespan(_: FastAPI):
             await task
 
 
-app = FastAPI(title="Tallystead API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Tallystead API", version="0.2.0", lifespan=lifespan)
 
 
 @app.middleware("http")

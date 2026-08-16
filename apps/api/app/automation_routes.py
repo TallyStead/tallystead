@@ -45,6 +45,7 @@ from app.models import (
     User,
     utc_now,
 )
+from app.obligations import recalculate_debt_balance
 
 router = APIRouter(prefix="/v1/automation", tags=["automation"])
 writer = require_roles(Role.OWNER, Role.MANAGER)
@@ -73,6 +74,7 @@ class TransferResolutionRequest(BaseModel):
     original_transaction_id: UUID | None = None
     debt_id: UUID | None = None
     amount_minor: int | None = Field(default=None, gt=0)
+    principal_amount_minor: int | None = Field(default=None, ge=0)
 
 
 class ReimbursementCreate(BaseModel):
@@ -91,6 +93,7 @@ class RecurringCreate(BaseModel):
 
 
 class AutomationRuleUpdate(BaseModel):
+    rule_name: str | None = Field(default=None, min_length=1, max_length=160)
     priority: int | None = Field(default=None, ge=1, le=10000)
     is_active: bool | None = None
     auto_apply: bool | None = None
@@ -138,7 +141,7 @@ def _rule_response(db: DbSession, rule: CategoryRule) -> dict:
     source = db.get(ImportSource, rule.source_id) if rule.source_id else None
     merchant = db.get(Merchant, UUID(rule.match_value)) if rule.match_type == "merchant" else None
     affected = db.scalar(select(func.count()).select_from(ImportRow).where(ImportRow.household_id == rule.household_id, ImportRow.status.in_(("unmatched", "ready", "deferred")), ImportRow.applied_rule_id == rule.id)) or 0
-    return {"rule_id": str(rule.id), "match_type": rule.match_type, "match_value": rule.match_value, "match_label": merchant.name if merchant else rule.match_value, "direction": rule.direction, "category_id": str(rule.category_id), "category_name": category.name if category else "Unavailable", "account_id": str(rule.account_id) if rule.account_id else None, "source_id": str(rule.source_id) if rule.source_id else None, "source_name": source.name if source else None, "amount_min_minor": rule.amount_min_minor, "amount_max_minor": rule.amount_max_minor, "description_pattern": rule.description_pattern, "priority": rule.priority, "auto_apply": rule.auto_apply, "is_active": rule.is_active, "use_count": rule.use_count, "last_applied_at": rule.last_applied_at.isoformat() if rule.last_applied_at else None, "created_from_action": rule.created_from_action, "preview_unconfirmed_count": affected}
+    return {"rule_id": str(rule.id), "rule_name": rule.rule_name, "match_type": rule.match_type, "match_value": rule.match_value, "match_label": merchant.name if merchant else rule.match_value, "direction": rule.direction, "category_id": str(rule.category_id), "category_name": category.name if category else "Unavailable", "account_id": str(rule.account_id) if rule.account_id else None, "source_id": str(rule.source_id) if rule.source_id else None, "source_name": source.name if source else None, "amount_min_minor": rule.amount_min_minor, "amount_max_minor": rule.amount_max_minor, "description_pattern": rule.description_pattern, "priority": rule.priority, "auto_apply": rule.auto_apply, "is_active": rule.is_active, "use_count": rule.use_count, "last_applied_at": rule.last_applied_at.isoformat() if rule.last_applied_at else None, "created_from_action": rule.created_from_action, "preview_unconfirmed_count": affected}
 
 
 def _resolution_row(db: DbSession, household_id: UUID, row_id: UUID) -> tuple[ImportRow, ImportSource]:
@@ -497,7 +500,14 @@ def preview_transfer_resolution(
         balance_change = row.amount_minor
     elif request.resolution_type == "loan_or_repayment":
         debt = _resolution_debt(db, membership.household_id, row, request.debt_id)
-        report_effect = f"The payment will reduce {debt.name} and appear as debt payoff activity, not household spending."
+        category = db.scalar(select(Category).where(Category.id == request.category_id, Category.household_id == membership.household_id, Category.category_type == "expense", Category.is_archived.is_(False))) if request.category_id else None
+        if not category:
+            raise HTTPException(status_code=422, detail="Choose an expense category for this loan payment")
+        principal = request.principal_amount_minor if request.principal_amount_minor is not None else abs(row.amount_minor)
+        if principal > abs(row.amount_minor):
+            raise HTTPException(status_code=422, detail="Principal cannot exceed the total loan payment")
+        resulting_balance = max(0, debt.balance_minor - principal)
+        report_effect = f"The full payment will count as {category.name} spending and debt-payment activity. {principal} minor units of principal will reduce {debt.name} from {debt.balance_minor} to {resulting_balance}."
         reconciliation_effect = "The imported payment will be linked to the nearest obligation for this tracked debt."
         balance_change = row.amount_minor
     else:
@@ -508,7 +518,7 @@ def preview_transfer_resolution(
         report_effect = f"The row will count as {expected_type} in {category.name}; it will not be excluded as an owned-account transfer."
         reconciliation_effect = f"The pending row will become a categorized ledger transaction identified as {request.resolution_type.replace('_', ' ')}."
         balance_change = row.amount_minor
-    return {"row_id": str(row.id), "resolution_type": request.resolution_type, "currency_code": row.currency_code, "account_balances_change_minor": balance_change, "spending_removed_minor": abs(row.amount_minor) if row.amount_minor < 0 and request.resolution_type in {"tracked_account", "external_owned_account", "loan_or_repayment"} else 0, "income_removed_minor": row.amount_minor if row.amount_minor > 0 and request.resolution_type in {"tracked_account", "external_owned_account", "reimbursement"} else 0, "report_effect": report_effect, "reconciliation_effect": reconciliation_effect, "category_name": category.name if category else None}
+    return {"row_id": str(row.id), "resolution_type": request.resolution_type, "currency_code": row.currency_code, "account_balances_change_minor": balance_change, "spending_removed_minor": abs(row.amount_minor) if row.amount_minor < 0 and request.resolution_type in {"tracked_account", "external_owned_account"} else 0, "income_removed_minor": row.amount_minor if row.amount_minor > 0 and request.resolution_type in {"tracked_account", "external_owned_account", "reimbursement"} else 0, "report_effect": report_effect, "reconciliation_effect": reconciliation_effect, "category_name": category.name if category else None}
 
 
 @router.post("/transfer-resolutions", status_code=201)
@@ -555,18 +565,23 @@ def resolve_transfer(
         linked_id = link.id
     elif request.resolution_type == "loan_or_repayment":
         debt = _resolution_debt(db, membership.household_id, row, request.debt_id)
-        transaction = _row_transaction(db, row, actor)
+        if debt.balance_anchor_minor is None:
+            debt.balance_anchor_minor = debt.balance_minor
+        transaction = _row_transaction(db, row, actor, request.category_id)
         transaction.activity_type = "debt_payment"
         instance = _debt_payment_instance(db, debt, row)
+        principal = request.principal_amount_minor if request.principal_amount_minor is not None else abs(row.amount_minor)
         link = BillPaymentLink(
             household_id=membership.household_id,
             bill_instance_id=instance.id,
             transaction_id=transaction.id,
             amount_minor=abs(row.amount_minor),
+            principal_amount_minor=principal,
             created_by_user_id=actor.id,
         )
         db.add(link)
         db.flush()
+        recalculate_debt_balance(db, debt)
         linked_id = link.id
     else:
         transaction = _row_transaction(db, row, actor, request.category_id)

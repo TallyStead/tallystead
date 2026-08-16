@@ -76,7 +76,7 @@ services:
         condition: service_healthy
 
   web:
-    image: ${TALLYSTEAD_WEB_IMAGE:-ghcr.io/tallystead/tallystead-web:0.1.0}
+    image: ${TALLYSTEAD_WEB_IMAGE:-ghcr.io/tallystead/tallystead-web:0.2.0}
     pull_policy: missing
     depends_on:
       - api

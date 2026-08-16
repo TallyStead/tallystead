@@ -1,0 +1,13 @@
+services:
+  caddy:
+    ports: !reset []
+    expose:
+      - "8080"
+    networks:
+      - default
+      - pangolin
+
+networks:
+  pangolin:
+    external: true
+    name: ${PANGOLIN_NETWORK_NAME:-pangolin}

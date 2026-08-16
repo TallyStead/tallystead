@@ -32,6 +32,24 @@ class LoginRequest(BaseModel):
     device_name: str | None = Field(default=None, max_length=120)
 
 
+class ProxyLoginRequest(BaseModel):
+    device_name: str | None = Field(default=None, max_length=120)
+
+
+class ProxyAuthStatusResponse(BaseModel):
+    available: bool
+    email: EmailStr | None = None
+    display_name: str | None = None
+
+
+class ProxyLinkStatusResponse(BaseModel):
+    linked: bool
+    provider: str | None = None
+    email_at_link: EmailStr | None = None
+    created_at: str | None = None
+    last_used_at: str | None = None
+
+
 class PasswordResetRequest(BaseModel):
     email: EmailStr
 
@@ -109,6 +127,7 @@ class NetworkConfigurationRequest(BaseModel):
     internal_url: str | None = Field(default=None, max_length=500)
     access_mode: str = Field(pattern="^(lan|reverse_proxy|vpn|internet)$")
     trusted_proxy_cidrs: list[str] = Field(default_factory=list, max_length=32)
+    forward_auth_enabled: bool = False
     certificate_mode: str = Field(pattern="^(local_ca|public_acme|cloudflare_dns|external_tls)$")
     dns_provider: str | None = Field(default=None, pattern="^cloudflare$")
     dns_zone: str | None = Field(default=None, max_length=255)
@@ -122,6 +141,7 @@ class NetworkConfigurationResponse(BaseModel):
     internal_url: str | None
     access_mode: str
     trusted_proxy_cidrs: list[str]
+    forward_auth_enabled: bool
     certificate_mode: str
     dns_provider: str | None
     dns_zone: str | None
@@ -160,12 +180,20 @@ class NetworkStatusResponse(BaseModel):
     certificate: CertificateStatusResponse
 
 
+class RequestHeaderDiagnostic(BaseModel):
+    name: str
+    value: str
+
+
 class EffectiveRequestResponse(BaseModel):
     effective_url: str
     scheme: str
     host: str
     source_address: str | None
+    transport_address: str | None
+    connection_route: str
     forwarded_headers_trusted: bool
+    headers: list[RequestHeaderDiagnostic]
 
 
 class AccountStatusRequest(BaseModel):
@@ -428,6 +456,14 @@ class LedgerTransactionResponse(BaseModel):
     splits: list[TransactionSplitResponse]
 
 
+class LedgerTransactionPageResponse(BaseModel):
+    items: list[LedgerTransactionResponse]
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+
+
 class TransactionUpdateRequest(BaseModel):
     payee: str | None = Field(default=None, max_length=200)
     merchant_id: UUID | None = None
@@ -528,6 +564,7 @@ class DebtCreateRequest(BaseModel):
     lender: str | None = Field(default=None, max_length=200)
     account_id: UUID | None = None
     balance_minor: int = Field(ge=0)
+    balance_as_of_date: date | None = None
     apr_basis_points: int = Field(default=0, ge=0, le=100000)
     minimum_payment_minor: int = Field(gt=0)
     due_day: int = Field(ge=1, le=31)
@@ -540,6 +577,7 @@ class DebtUpdateRequest(BaseModel):
     lender: str | None = Field(default=None, max_length=200)
     account_id: UUID | None = None
     balance_minor: int | None = Field(default=None, ge=0)
+    balance_as_of_date: date | None = None
     apr_basis_points: int | None = Field(default=None, ge=0, le=100000)
     minimum_payment_minor: int | None = Field(default=None, gt=0)
     due_day: int | None = Field(default=None, ge=1, le=31)
@@ -550,12 +588,14 @@ class DebtUpdateRequest(BaseModel):
 
 class DebtResponse(DebtCreateRequest):
     debt_id: UUID
+    balance_anchor_minor: int
     is_active: bool
 
 
 class PaymentLinkRequest(BaseModel):
     transaction_id: UUID
     amount_minor: int = Field(gt=0)
+    principal_amount_minor: int | None = Field(default=None, ge=0)
 
 
 class PaymentLinkResponse(BaseModel):
@@ -834,6 +874,14 @@ class ReviewItemResponse(BaseModel):
     created_transaction_id: UUID | None = None
 
 
+class ReviewQueuePageResponse(BaseModel):
+    items: list[ReviewItemResponse]
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+
+
 class MatchDecisionRequest(BaseModel):
     action: str = Field(pattern="^(confirm|reject|defer)$")
     note: str | None = Field(default=None, max_length=2000)
@@ -842,6 +890,15 @@ class MatchDecisionRequest(BaseModel):
 class CreateImportedTransactionRequest(BaseModel):
     category_id: UUID | None = None
     remember_rule: bool = False
+
+
+class BulkCreateImportedTransactionsRequest(BaseModel):
+    row_ids: list[UUID] = Field(min_length=1, max_length=100)
+    category_id: UUID
+
+
+class ImportCategorySuggestionRequest(BaseModel):
+    row_ids: list[UUID] = Field(min_length=1, max_length=25)
 
 
 class ReminderUpdateRequest(BaseModel):

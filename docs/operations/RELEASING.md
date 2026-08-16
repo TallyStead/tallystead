@@ -11,8 +11,20 @@ The workflow accepts a semantic version such as `v0.1.0` or `v0.1.0-rc.1`, must 
 3. Fails on an unresolved high or critical Trivy finding in any included image.
 4. Generates dependency-only CycloneDX SBOMs and validates the resolved release Compose bundle.
 5. Publishes immutable API, backup, and Caddy version tags to GitHub Container Registry; the web repository publishes and attests its own image.
-6. Creates GitHub artifact attestations for the three server-owned images and the installable archive.
-7. Creates a draft GitHub Release with generated notes, the server archive, checksums, and SBOMs.
+6. Publishes the matching immutable `@tallystead/contracts` package to GitHub Packages.
+
+Before opening the release change, coordinate the checked-in component versions from the repository root:
+
+```sh
+python3 ../tallystead-development/set_version.py 0.2.0 --web-version 0.2.0
+python3 ../tallystead-development/set_version.py 0.2.0 --web-version 0.2.0 --check
+```
+
+The server version applies to the API, Caddy, backup, and contracts package. Web remains independently versioned, so pass its exact intended release version when it differs.
+
+For a routine bump, use `python3 ../tallystead-development/set_version.py next patch`, `next minor`, or `next major`. The script calculates server/contracts and web from their respective checked-in versions.
+7. Creates GitHub artifact attestations for the three server-owned images, installable archive, and contract package archive.
+8. Creates a draft GitHub Release with generated notes, the server archive, OpenAPI contract, contract package archive, checksums, and SBOMs.
 
 The draft is a review boundary. The workflow never publishes a GitHub Release automatically and never creates a `latest` image tag. Operators and clients must choose an explicit version.
 
@@ -35,6 +47,8 @@ Before publishing the draft:
 - download the server archive and validate it on a clean disposable host;
 - verify `SHA256SUMS` and the archive attestation;
 - pull each explicit image and confirm the three server-image attestations plus the web image's attestation from `tallystead/tallystead-web`;
+- verify the released OpenAPI document and `@tallystead/contracts` package match the selected server version;
+- verify the contract package archive attestation;
 - review generated release notes for migrations, known issues, security exceptions, and upgrade/rollback instructions;
 - verify package visibility matches the release audience; and
 - complete any remaining external brand, Cloudflare, Proxmox, accessibility, and branch-protection gates.

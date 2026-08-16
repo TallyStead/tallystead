@@ -47,8 +47,9 @@ Run this checklist from a clean checkout for every release candidate. Do not use
 ## Release artifacts
 
 - [ ] Dispatch the manual **Release** workflow from the intended `main` commit with a new semantic version and the recorded checklist confirmation.
-- [ ] Confirm Quality, Security, scans of every included image, SBOM generation, bundle validation, server-image publication, and artifact attestations all pass.
+- [ ] Confirm Quality, Security, contract drift/compatibility, scans of every included image, SBOM generation, bundle validation, server-image and contract-package publication, and artifact attestations all pass.
 - [ ] Download the draft's server archive and `SHA256SUMS`; verify the checksum and GitHub attestation from a clean machine.
+- [ ] Verify the released contract package archive checksum and GitHub attestation.
 - [ ] Install the archive on a disposable host, complete setup/health/backup/restore checks, and verify the three server images and separately versioned web image match the release manifest.
 - [ ] Review generated notes, migrations, exceptions, package visibility, and rollback instructions before manually publishing the draft. Never reuse or overwrite a release version.
 
