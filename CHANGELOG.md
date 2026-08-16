@@ -2,6 +2,20 @@
 
 All notable changes to the Tallystead server, API contract, workers, and supported household deployment are recorded here.
 
+## [0.2.1] - Unreleased
+
+### Changed
+
+- Network identity, origins, proxy trust, forwarded authentication, and certificate ownership now come only from `.env`; database staging and runtime Caddy rewriting were removed.
+- The Server page is read-only and reports loaded configuration, certificate state, service health, and sanitized connection diagnostics.
+- Pangolin/Newt may use either a private shared Docker network or a restricted private host IP and HTTP port while retaining direct local HTTPS recovery.
+- Invalid network environments fail at startup, default HTTPS ports are normalized for identity matching, and host-console recovery no longer requires SQL.
+
+### Compatibility
+
+- The removed network stage/test/apply/rollback API endpoints are not used by the `0.2.1` web client. Deploy the `0.2.1` server and web images together.
+- Existing encrypted `network_configuration` rows are ignored and do not need to be deleted.
+
 ## [0.2.0] - Unreleased
 
 ### Added
@@ -16,7 +30,6 @@ All notable changes to the Tallystead server, API contract, workers, and support
 - A Pangolin proxy-only Compose override and private Caddy ingress that avoid publishing Tallystead ports on the host.
 - A field-by-field network configuration reference with deployment recipes, safe-change guidance, troubleshooting, and recovery.
 - Optional Pangolin forwarded-identity sign-in for existing active members, with stable subject linking, trusted-source enforcement, local-role authority, session issuance, and audit history.
-- An out-of-band network recovery script that resets saved proxy settings to `.env` and restores direct Caddy HTTPS publishing without requiring web access.
 - Owner-only current-connection diagnostics with proxy trust decisions and sanitized request headers for deployment troubleshooting.
 - Server-side transaction search, account/category/status/direction/reconciliation/date filters, total counts, and bounded pagination across the complete household ledger.
 - Server-side standard and transfer review-queue pagination with complete-evidence search, source/account/category/status/direction/date filters, and accurate queue totals.

@@ -1,56 +1,28 @@
-import asyncio
-from contextlib import asynccontextmanager, suppress
-from urllib.parse import urlparse
-
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.assistant_routes import router as assistant_router
 from app.automation_routes import router as automation_router
 from app.config import settings
 from app.data_routes import router as data_router
-from app.database import SessionLocal
 from app.ingestion_routes import router as ingestion_router
 from app.network_routes import router as network_router
-from app.networking import active_configuration, caddy, effective_request, render_caddyfile
+from app.networking import (
+    allowed_https_authorities,
+    effective_request,
+    environment_configuration,
+    normalized_https_authority,
+)
 from app.plan_routes import router as plan_router
 from app.routes import obligations_router, router
 
-
-async def reconcile_caddy() -> None:
-    await asyncio.sleep(8)
-    while True:
-        try:
-            with SessionLocal() as db:
-                config = active_configuration(db)
-            await asyncio.to_thread(caddy.load, render_caddyfile(config))
-        except (OSError, ValueError):
-            pass
-        await asyncio.sleep(60)
-
-
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    task = asyncio.create_task(reconcile_caddy()) if settings.network_controller_enabled else None
-    yield
-    if task:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-
-
-app = FastAPI(title="Tallystead API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Tallystead API", version="0.2.1")
 
 
 @app.middleware("http")
 async def network_boundary(request: Request, call_next):
-    try:
-        with SessionLocal() as db:
-            config = active_configuration(db)
-    except SQLAlchemyError:
-        config = {"canonical_url": settings.public_url, "internal_url": None}
+    config = environment_configuration()
     headers = {key.lower(): value for key, value in request.headers.items()}
     effective = effective_request(request.client.host if request.client else None, headers, config)
     request.state.effective_request = effective
@@ -60,10 +32,12 @@ async def network_boundary(request: Request, call_next):
     origin = request.headers.get("origin")
     if origin and origin.rstrip("/") not in allowed_origins:
         return JSONResponse(status_code=403, content={"detail": "Origin is not allowed by the canonical server configuration"})
-    if settings.network_enforcement_enabled and request.url.path.startswith("/v1/"):
-        allowed_hosts = {urlparse(value).netloc for value in (config.get("canonical_url"), config.get("internal_url")) if value}
-        if effective.host not in allowed_hosts or effective.scheme != "https":
-            return JSONResponse(status_code=421, content={"detail": "Request does not match the configured HTTPS server identity"})
+    if (
+        settings.network_enforcement_enabled
+        and request.url.path.startswith("/v1/")
+        and (normalized_https_authority(effective.host) not in allowed_https_authorities(config) or effective.scheme != "https")
+    ):
+        return JSONResponse(status_code=421, content={"detail": "Request does not match the configured HTTPS server identity"})
     if request.method == "OPTIONS" and origin:
         response = Response(status_code=204)
     else:

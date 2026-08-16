@@ -5197,151 +5197,12 @@
         "title": "NetWorthResponse",
         "type": "object"
       },
-      "NetworkCheckResponse": {
-        "properties": {
-          "detail": {
-            "title": "Detail",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "status",
-          "detail"
-        ],
-        "title": "NetworkCheckResponse",
-        "type": "object"
-      },
-      "NetworkConfigurationRequest": {
-        "properties": {
-          "access_mode": {
-            "pattern": "^(lan|reverse_proxy|vpn|internet)$",
-            "title": "Access Mode",
-            "type": "string"
-          },
-          "acme_email": {
-            "anyOf": [
-              {
-                "format": "email",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Acme Email"
-          },
-          "canonical_url": {
-            "maxLength": 500,
-            "minLength": 9,
-            "title": "Canonical Url",
-            "type": "string"
-          },
-          "certificate_mode": {
-            "pattern": "^(local_ca|public_acme|cloudflare_dns|external_tls)$",
-            "title": "Certificate Mode",
-            "type": "string"
-          },
-          "cloudflare_api_token": {
-            "anyOf": [
-              {
-                "maxLength": 512,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cloudflare Api Token"
-          },
-          "dns_provider": {
-            "anyOf": [
-              {
-                "pattern": "^cloudflare$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dns Provider"
-          },
-          "dns_zone": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dns Zone"
-          },
-          "forward_auth_enabled": {
-            "default": false,
-            "title": "Forward Auth Enabled",
-            "type": "boolean"
-          },
-          "internal_url": {
-            "anyOf": [
-              {
-                "maxLength": 500,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Internal Url"
-          },
-          "internet_exposure_confirmed": {
-            "default": false,
-            "title": "Internet Exposure Confirmed",
-            "type": "boolean"
-          },
-          "trusted_proxy_cidrs": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 32,
-            "title": "Trusted Proxy Cidrs",
-            "type": "array"
-          }
-        },
-        "required": [
-          "canonical_url",
-          "access_mode",
-          "certificate_mode"
-        ],
-        "title": "NetworkConfigurationRequest",
-        "type": "object"
-      },
       "NetworkConfigurationResponse": {
         "properties": {
           "access_mode": {
             "title": "Access Mode",
             "type": "string"
           },
-          "acme_email": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Acme Email"
-          },
           "canonical_url": {
             "title": "Canonical Url",
             "type": "string"
@@ -5349,32 +5210,6 @@
           "certificate_mode": {
             "title": "Certificate Mode",
             "type": "string"
-          },
-          "cloudflare_configured": {
-            "title": "Cloudflare Configured",
-            "type": "boolean"
-          },
-          "dns_provider": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dns Provider"
-          },
-          "dns_zone": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dns Zone"
           },
           "forward_auth_enabled": {
             "title": "Forward Auth Enabled",
@@ -5390,10 +5225,6 @@
               }
             ],
             "title": "Internal Url"
-          },
-          "internet_exposure_confirmed": {
-            "title": "Internet Exposure Confirmed",
-            "type": "boolean"
           },
           "trusted_proxy_cidrs": {
             "items": {
@@ -5409,99 +5240,25 @@
           "access_mode",
           "trusted_proxy_cidrs",
           "forward_auth_enabled",
-          "certificate_mode",
-          "dns_provider",
-          "dns_zone",
-          "cloudflare_configured",
-          "acme_email",
-          "internet_exposure_confirmed"
+          "certificate_mode"
         ],
         "title": "NetworkConfigurationResponse",
         "type": "object"
       },
       "NetworkStatusResponse": {
         "properties": {
-          "active": {
-            "$ref": "#/components/schemas/NetworkConfigurationResponse"
-          },
-          "canonical_change_warning": {
-            "title": "Canonical Change Warning",
-            "type": "boolean"
-          },
           "certificate": {
             "$ref": "#/components/schemas/CertificateStatusResponse"
           },
-          "last_known_good": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkConfigurationResponse"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "last_test": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkTestResponse"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "revision": {
-            "title": "Revision",
-            "type": "integer"
-          },
-          "staged": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkConfigurationResponse"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "configuration": {
+            "$ref": "#/components/schemas/NetworkConfigurationResponse"
           }
         },
         "required": [
-          "active",
-          "staged",
-          "last_known_good",
-          "last_test",
-          "revision",
-          "canonical_change_warning",
+          "configuration",
           "certificate"
         ],
         "title": "NetworkStatusResponse",
-        "type": "object"
-      },
-      "NetworkTestResponse": {
-        "properties": {
-          "checks": {
-            "items": {
-              "$ref": "#/components/schemas/NetworkCheckResponse"
-            },
-            "title": "Checks",
-            "type": "array"
-          },
-          "ready": {
-            "title": "Ready",
-            "type": "boolean"
-          },
-          "tested_at": {
-            "title": "Tested At",
-            "type": "string"
-          }
-        },
-        "required": [
-          "ready",
-          "tested_at",
-          "checks"
-        ],
-        "title": "NetworkTestResponse",
         "type": "object"
       },
       "PasskeyLoginFinishRequest": {
@@ -8264,7 +8021,7 @@
   },
   "info": {
     "title": "Tallystead API",
-    "version": "0.2.0"
+    "version": "0.2.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -16945,32 +16702,6 @@
         ]
       }
     },
-    "/v1/system/network/apply": {
-      "post": {
-        "operationId": "apply_network_configuration_v1_system_network_apply_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NetworkStatusResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Apply Network Configuration",
-        "tags": [
-          "system"
-        ]
-      }
-    },
     "/v1/system/network/caddy-root": {
       "get": {
         "operationId": "export_caddy_root_v1_system_network_caddy_root_get",
@@ -17016,104 +16747,6 @@
           }
         ],
         "summary": "Effective Request Diagnostic",
-        "tags": [
-          "system"
-        ]
-      }
-    },
-    "/v1/system/network/rollback": {
-      "post": {
-        "operationId": "rollback_network_configuration_v1_system_network_rollback_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NetworkStatusResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Rollback Network Configuration",
-        "tags": [
-          "system"
-        ]
-      }
-    },
-    "/v1/system/network/stage": {
-      "put": {
-        "operationId": "stage_network_configuration_v1_system_network_stage_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NetworkConfigurationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NetworkStatusResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Stage Network Configuration",
-        "tags": [
-          "system"
-        ]
-      }
-    },
-    "/v1/system/network/test": {
-      "post": {
-        "operationId": "test_network_configuration_v1_system_network_test_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NetworkTestResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Test Network Configuration",
         "tags": [
           "system"
         ]

@@ -1,6 +1,11 @@
 {
 	admin unix//run/tallystead-caddy/admin.sock
 	persist_config off
+	servers {
+		trusted_proxies static {$TALLYSTEAD_TRUSTED_PROXY_CIDRS:127.0.0.1/32}
+		trusted_proxies_strict
+		client_ip_headers X-Forwarded-For
+	}
 }
 
 (tallystead_routes) {
@@ -20,10 +25,10 @@
 		flush_interval -1
 		header_up Host {http.request.host}
 		header_up X-Tallystead-Proxy-Token {env.TALLYSTEAD_PROXY_TOKEN}
-		header_up X-Tallystead-Forward-Auth-Subject {http.request.header.Remote-User}
-		header_up X-Tallystead-Forward-Auth-Email {http.request.header.Remote-Email}
-		header_up X-Tallystead-Forward-Auth-Name {http.request.header.Remote-Name}
-		header_up X-Tallystead-Forward-Auth-Source {http.request.remote.host}
+		header_up -X-Tallystead-Forward-Auth-Subject
+		header_up -X-Tallystead-Forward-Auth-Email
+		header_up -X-Tallystead-Forward-Auth-Name
+		header_up -X-Tallystead-Forward-Auth-Source
 		header_up -Remote-User
 		header_up -Remote-Email
 		header_up -Remote-Name
@@ -41,5 +46,28 @@ https://{$TALLYSTEAD_SERVER_HOST:localhost} {
 # Private ingress for an external reverse proxy on a shared Docker network.
 # This port is never published by the standard Compose deployment.
 http://:8080 {
-	import tallystead_routes
+	@untrusted not remote_ip {$TALLYSTEAD_TRUSTED_PROXY_CIDRS:127.0.0.1/32}
+	abort @untrusted
+	header {
+		-Server
+		-X-Powered-By
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
+	@api path /v1/* /health /docs* /openapi.json
+	reverse_proxy @api api:8000 {
+		flush_interval -1
+		header_up Host {http.request.host}
+		header_up X-Tallystead-Proxy-Token {env.TALLYSTEAD_PROXY_TOKEN}
+		header_up X-Tallystead-Forward-Auth-Subject {http.request.header.Remote-User}
+		header_up X-Tallystead-Forward-Auth-Email {http.request.header.Remote-Email}
+		header_up X-Tallystead-Forward-Auth-Name {http.request.header.Remote-Name}
+		header_up X-Tallystead-Forward-Auth-Source {http.request.remote.host}
+		header_up -Remote-User
+		header_up -Remote-Email
+		header_up -Remote-Name
+		header_up -Remote-Role
+	}
+	reverse_proxy web:3000
 }
