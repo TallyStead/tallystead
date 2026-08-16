@@ -3,6 +3,8 @@
 **Status:** Phase 6A implemented operational specification  
 **Related:** [Self-hosted server platform](../architecture/SELF_HOSTED_SERVER_PLATFORM.md) · [RBAC](../architecture/RBAC_AND_ACCESS_CONTROL.md) · [Proxmox deployment](PROXMOX_DEPLOYMENT.md)
 
+For a field-by-field explanation of the Server page, recommended combinations, Pangolin setup, and recovery commands, see the [Network configuration reference](NETWORK_CONFIGURATION_REFERENCE.md).
+
 ## Identity model
 
 Tallystead has one **canonical client URL**. Browsers, password-reset links, passkeys, and future iOS and Android clients use this exact HTTPS origin. Changing it can require saved clients to reconnect and users to enroll replacement passkeys.
@@ -24,6 +26,7 @@ Internal DNS should resolve the canonical name to the private load balancer. Ext
 
 - **Local network only:** Caddy local CA; no supported public ingress.
 - **Internal reverse proxy:** only configured proxy CIDRs may supply forwarded client headers; the proxy verifies Caddy's upstream certificate.
+- **Pangolin on the same Docker host:** Pangolin terminates public TLS and reaches Caddy through a private shared Docker network; Tallystead publishes no host port.
 - **VPN/private tunnel:** the canonical origin remains stable while routing stays private.
 - **Direct internet:** explicit Owner opt-in only. Public certificate, firewall, update, authentication, backup, and Phase 7 readiness are mandatory.
 
@@ -72,7 +75,29 @@ The load balancer may terminate the canonical public certificate, but the load-b
 - import and trust the persistent Tallystead Caddy root; or
 - use Cloudflare DNS-01 to give the internal upstream hostname a publicly verifiable certificate.
 
-Never disable certificate verification on the load balancer as a permanent configuration.
+Never disable certificate verification on the load balancer as a permanent configuration. The Pangolin proxy-only profile is the deliberate exception to the HTTPS upstream requirement: its HTTP hop exists only on a shared Docker network and is not published on the host.
+
+### Pangolin proxy-only deployment
+
+Create the external network if Pangolin did not already create it, and attach Pangolin's proxy connector to it:
+
+```sh
+docker network create pangolin
+```
+
+Start Tallystead with the proxy-only override:
+
+```sh
+docker compose --env-file .env \
+  -f infrastructure/compose/compose.yaml \
+  -f infrastructure/compose/compose.pangolin.yaml up -d
+```
+
+Configure the Pangolin resource target as HTTP hostname `caddy`, port `8080`. The override removes Caddy's host-published HTTPS port. Set `PANGOLIN_NETWORK_NAME` if the existing external Docker network has another name.
+
+On Tallystead's Server page, choose the Pangolin preset, keep the public Pangolin HTTPS URL as the canonical URL, and enter Pangolin's Docker subnet as a trusted proxy CIDR. Find the narrow subnet with `docker network inspect pangolin`; do not trust all private address space when a narrower subnet is available.
+
+Keep terminal access to the host. If Pangolin becomes unavailable, start the standard Compose deployment without this override to regain direct HTTPS access. Do not delete Caddy or database volumes.
 
 ## Safe activation and rollback
 

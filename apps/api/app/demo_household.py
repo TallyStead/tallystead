@@ -200,7 +200,7 @@ def create_demo_household(db: Session, household_id: UUID, actor_user_id: UUID, 
     batch = ImportBatch(id=demo_id(household_id, "import-batch:checking"), household_id=household_id, source_id=source.id, created_by_user_id=actor_user_id, filename="fictional-checking.csv", file_checksum=hashlib.sha256(raw_csv.encode()).hexdigest(), parser_version="csv-v2", status="review", raw_csv=raw_csv, row_count=8, candidate_count=5, duplicate_count=1, invalid_count=1, ready_count=1, transfer_count=2, recurring_count=1, review_count=5, mapping_version_id=mapping.id, ingestion_channel="csv_upload")
     db.add(batch)
     db.flush()
-    rule = CategoryRule(id=demo_id(household_id, "rule:heb"), household_id=household_id, category_id=categories["Groceries"].id, match_type="exact", match_value="h-e-b demo market", direction="out", account_id=accounts["checking"].id, source_id=source.id, priority=100, auto_apply=True, use_count=4, created_from_action="apply_and_remember", is_active=True, created_by_user_id=actor_user_id)
+    rule = CategoryRule(id=demo_id(household_id, "rule:heb"), household_id=household_id, category_id=categories["Groceries"].id, match_type="exact", match_value="h-e-b demo market", rule_name="H-E-B groceries", direction="out", account_id=accounts["checking"].id, source_id=source.id, priority=100, auto_apply=True, use_count=4, created_from_action="apply_and_remember", is_active=True, created_by_user_id=actor_user_id)
     db.add(rule)
     db.flush()
     rows = [

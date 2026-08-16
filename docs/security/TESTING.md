@@ -36,9 +36,15 @@ cd apps/api
 ruff check .
 pytest
 
+# Contract drift, generated-client, and type checks (from the repository root)
+python3 scripts/export_openapi.py --check
+npm ci --prefix packages/contracts
+npm run generate --prefix packages/contracts
+npm test --prefix packages/contracts
+
 # Published-web integration verification
-docker pull ghcr.io/tallystead/tallystead-web:0.1.0
-TALLYSTEAD_WEB_IMAGE=ghcr.io/tallystead/tallystead-web:0.1.0 \
+docker pull ghcr.io/tallystead/tallystead-web:0.2.0
+TALLYSTEAD_WEB_IMAGE=ghcr.io/tallystead/tallystead-web:0.2.0 \
   docker compose --env-file .env -f infrastructure/compose/compose.yaml up -d web
 
 # Compose configuration validation

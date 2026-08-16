@@ -20,6 +20,7 @@ from app.database import Base, get_db
 from app.main import app
 from app.models import (
     AuditEvent,
+    ExternalIdentity,
     FinancialAccount,
     Household,
     PasskeyCredential,
@@ -235,6 +236,8 @@ def test_phase6a_cloudflare_credentials_are_encrypted_write_only_and_scoped() ->
     rendered = render_caddyfile(payload)
     assert "dns cloudflare" in rendered and "persist_config off" in rendered
     assert "trusted_proxies" not in rendered
+    assert "http://:8080" in rendered
+    assert rendered.count("reverse_proxy web:3000") == 2
 
 
 def test_phase6a_forwarded_headers_require_caddy_network_and_shared_secret(monkeypatch) -> None:
@@ -250,6 +253,99 @@ def test_phase6a_forwarded_headers_require_caddy_network_and_shared_secret(monke
     trusted = effective_request("172.20.0.4", {"host": "api:8000", "x-forwarded-host": "ledger.example.com", "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.7", "x-tallystead-proxy-token": "shared-proxy-secret"}, config)
     assert trusted.forwarded_headers_trusted is True
     assert trusted.host == "ledger.example.com" and trusted.scheme == "https" and trusted.client_ip == "203.0.113.7"
+
+
+def test_owner_connection_diagnostic_reports_route_and_redacts_secrets(monkeypatch) -> None:
+    from app.config import settings as runtime_settings
+
+    monkeypatch.setattr(runtime_settings, "caddy_proxy_cidrs", "127.0.0.0/8")
+    monkeypatch.setattr(runtime_settings, "proxy_shared_secret", "test-proxy-secret")
+    client = TestClient(app, client=("127.0.0.1", 50000))
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    response = client.get(
+        "/v1/system/network/effective-request",
+        headers={
+            "Authorization": f"Bearer {owner['access_token']}",
+            "Cookie": "private=value",
+            "X-Tallystead-Proxy-Token": "test-proxy-secret",
+            "X-Forwarded-For": "10.55.0.9",
+            "X-Forwarded-Host": "tallystead.example.test",
+            "X-Forwarded-Proto": "https",
+            "User-Agent": "Tallystead diagnostic test",
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["connection_route"] == "trusted_proxy"
+    assert payload["transport_address"] == "127.0.0.1"
+    assert payload["source_address"] == "10.55.0.9"
+    headers = {item["name"]: item["value"] for item in payload["headers"]}
+    assert headers["authorization"] == "[redacted]"
+    assert headers["cookie"] == "[redacted]"
+    assert headers["x-tallystead-proxy-token"] == "[redacted]"
+    assert headers["x-forwarded-for"] == "10.55.0.9"
+    assert owner["access_token"] not in response.text
+    assert "private=value" not in response.text
+    assert "test-proxy-secret" not in response.text
+
+
+def test_transaction_page_searches_filters_and_pages_complete_ledger() -> None:
+    client = TestClient(app)
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    checking = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Household Checking", "account_type": "checking", "currency_code": "USD"}).json()
+    savings = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Rainy Day Savings", "account_type": "savings", "currency_code": "USD"}).json()
+    groceries = next(item for item in client.get("/v1/ledger/categories", headers=headers).json() if item["name"] == "Groceries")
+    for index in range(12):
+        account = checking if index < 11 else savings
+        response = client.post(
+            "/v1/ledger/transactions",
+            headers=headers,
+            json={
+                "account_id": account["account_id"],
+                "transaction_date": f"2026-08-{index + 1:02d}",
+                "amount_minor": 50000 if index == 0 else -(1000 + index),
+                "currency_code": "USD",
+                "status": "pending" if index == 10 else "posted",
+                "payee": "Acme Market" if index in {2, 7} else f"Payee {index}",
+                "memo": "weekly food" if index == 7 else None,
+                "splits": [] if index == 0 else [{"category_id": groceries["category_id"], "amount_minor": -(1000 + index)}],
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    first = client.get("/v1/ledger/transactions/page?page=1&page_size=10", headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.json()["total_items"] == 12
+    assert first.json()["total_pages"] == 2
+    assert len(first.json()["items"]) == 10
+    assert first.json()["items"][0]["transaction_date"] == "2026-08-12"
+    second = client.get("/v1/ledger/transactions/page?page=2&page_size=10", headers=headers).json()
+    assert len(second["items"]) == 2
+
+    searched = client.get("/v1/ledger/transactions/page?search=weekly%20food&page_size=10", headers=headers).json()
+    assert searched["total_items"] == 1 and searched["items"][0]["payee"] == "Acme Market"
+    category = client.get(f"/v1/ledger/transactions/page?category_id={groceries['category_id']}&page_size=10", headers=headers).json()
+    assert category["total_items"] == 11
+    filtered = client.get(
+        f"/v1/ledger/transactions/page?account_id={checking['account_id']}&transaction_status=pending&direction=outflow&date_from=2026-08-10&date_to=2026-08-11&page_size=10",
+        headers=headers,
+    ).json()
+    assert filtered["total_items"] == 1 and filtered["items"][0]["transaction_date"] == "2026-08-11"
+    candidates = client.get(
+        f"/v1/ledger/transactions/page?transaction_status=posted&direction=outflow&currency_code=usd&amount_minor=-1002&exclude_account_id={savings['account_id']}&has_transfer=false&has_splits=true&page_size=10",
+        headers=headers,
+    )
+    assert candidates.status_code == 200, candidates.text
+    assert candidates.json()["total_items"] == 1
+    assert candidates.json()["items"][0]["transaction_date"] == "2026-08-03"
+    without_splits = client.get(
+        "/v1/ledger/transactions/page?transaction_status=posted&direction=inflow&has_splits=false&page_size=10",
+        headers=headers,
+    ).json()
+    assert without_splits["total_items"] == 1
+    invalid_dates = client.get("/v1/ledger/transactions/page?date_from=2026-08-12&date_to=2026-08-01", headers=headers)
+    assert invalid_dates.status_code == 422
 
 
 def test_phase6a_failed_activation_retains_active_configuration(monkeypatch) -> None:
@@ -271,6 +367,67 @@ def test_phase6a_failed_activation_retains_active_configuration(monkeypatch) -> 
     assert failed.status_code == 409
     with TestSession() as db:
         assert active_configuration(db)["canonical_url"] == original["canonical_url"]
+
+
+def test_pangolin_forward_auth_links_only_an_existing_active_member(monkeypatch) -> None:
+    from app.config import settings as runtime_settings
+    from app.networking import load_network_state, save_network_state
+
+    monkeypatch.setattr(runtime_settings, "caddy_proxy_cidrs", "127.0.0.0/8")
+    monkeypatch.setattr(runtime_settings, "proxy_shared_secret", "test-proxy-secret")
+    client = TestClient(app, client=("127.0.0.1", 50000))
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    owner_headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    member = client.post("/v1/household/members", headers=owner_headers, json={"email": "member@example.com", "display_name": "Member", "password": "another-long-local-password", "role": "viewer"}).json()
+    with TestSession() as db:
+        state = load_network_state(db)
+        state["active"] = {
+            **state["active"],
+            "canonical_url": "https://tallystead.example.test",
+            "access_mode": "reverse_proxy",
+            "trusted_proxy_cidrs": ["10.55.0.0/24"],
+            "forward_auth_enabled": True,
+            "certificate_mode": "external_tls",
+        }
+        save_network_state(db, state, UUID(owner["user_id"]))
+    proxy_headers = {
+        "Host": "api:8000",
+        "X-Forwarded-Host": "tallystead.example.test",
+        "X-Forwarded-Proto": "https",
+        "X-Tallystead-Proxy-Token": "test-proxy-secret",
+        "X-Tallystead-Forward-Auth-Source": "10.55.0.8",
+        "X-Tallystead-Forward-Auth-Subject": "pangolin-user-123",
+        "X-Tallystead-Forward-Auth-Email": "member@example.com",
+        "X-Tallystead-Forward-Auth-Name": "Pangolin Display Name",
+        "Remote-Role": "admin",
+    }
+    status_response = client.get("/v1/auth/proxy/status", headers=proxy_headers)
+    assert status_response.status_code == 200
+    assert status_response.json() == {"available": True, "email": "member@example.com", "display_name": "Pangolin Display Name"}
+    signed_in = client.post("/v1/auth/proxy/login", headers=proxy_headers, json={"device_name": "Pangolin browser"})
+    assert signed_in.status_code == 200
+    assert signed_in.json()["user_id"] == member["user_id"]
+    assert signed_in.json()["role"] == "viewer"
+    with TestSession() as db:
+        identity = db.query(ExternalIdentity).one()
+        assert identity.subject == "pangolin-user-123"
+        assert identity.email_at_link == "member@example.com"
+        assert db.query(AuditEvent).filter(AuditEvent.action == "auth.external_identity_linked").count() == 1
+        assert db.query(AuditEvent).filter(AuditEvent.action == "auth.session_created", AuditEvent.detail == "pangolin_forward_auth").count() == 1
+
+    changed_email_headers = {**proxy_headers, "X-Tallystead-Forward-Auth-Email": "changed@example.com"}
+    assert client.post("/v1/auth/proxy/login", headers=changed_email_headers, json={}).status_code == 403
+    unmatched_headers = {**proxy_headers, "X-Tallystead-Forward-Auth-Subject": "unknown-subject", "X-Tallystead-Forward-Auth-Email": "unknown@example.com"}
+    assert client.post("/v1/auth/proxy/login", headers=unmatched_headers, json={}).status_code == 403
+    untrusted_headers = {key: value for key, value in proxy_headers.items() if key != "X-Tallystead-Proxy-Token"}
+    assert client.get("/v1/auth/proxy/status", headers=untrusted_headers).json()["available"] is False
+    member_headers = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+    link_status = client.get("/v1/auth/proxy/link", headers=member_headers)
+    assert link_status.status_code == 200 and link_status.json()["linked"] is True
+    assert client.delete("/v1/auth/proxy/link", headers=member_headers).status_code == 204
+    assert client.get("/v1/auth/proxy/link", headers=member_headers).json()["linked"] is False
+    with TestSession() as db:
+        assert db.query(AuditEvent).filter(AuditEvent.action == "auth.external_identity_unlinked").count() == 1
 
 
 def test_first_run_setup_creates_owner_and_authenticated_session() -> None:
@@ -602,6 +759,21 @@ def test_viewer_can_read_but_cannot_write_ledger() -> None:
     viewer_headers = {"Authorization": f"Bearer {viewer['access_token']}"}
     assert client.get("/v1/ledger/accounts", headers=viewer_headers).status_code == 200
     assert client.post("/v1/ledger/accounts", headers=viewer_headers, json={"name": "Hidden", "account_type": "cash", "currency_code": "USD"}).status_code == 403
+
+
+def test_empty_account_can_be_deleted_but_financial_history_is_protected() -> None:
+    client = TestClient(app)
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    accidental = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Accidental", "account_type": "checking", "currency_code": "USD"}).json()
+    assert client.delete(f"/v1/ledger/accounts/{accidental['account_id']}", headers=headers).status_code == 204
+    assert all(item["account_id"] != accidental["account_id"] for item in client.get("/v1/ledger/accounts", headers=headers).json())
+
+    used = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Used", "account_type": "checking", "currency_code": "USD"}).json()
+    client.post("/v1/ledger/transactions", headers=headers, json={"account_id": used["account_id"], "transaction_date": "2026-08-14", "amount_minor": -100, "currency_code": "USD", "payee": "Test"})
+    blocked = client.delete(f"/v1/ledger/accounts/{used['account_id']}", headers=headers)
+    assert blocked.status_code == 409
+    assert "Archive it" in blocked.json()["detail"]
 
 
 def test_transaction_revision_reconciliation_and_reversal_preserve_history() -> None:
@@ -980,6 +1152,90 @@ def test_phase4_explicit_transaction_creation_duplicate_detection_and_role_polic
     viewer=client.post("/v1/auth/login",json={"email":"viewer@example.com","password":"another-long-local-password"}).json(); vh={"Authorization":f"Bearer {viewer['access_token']}"}
     assert client.get("/v1/reconciliation/queue",headers=vh).status_code == 200
     assert client.post(f"/v1/imports/sources/{source['source_id']}/csv",headers=vh,json={"filename":"x.csv","csv_text":csv_text}).status_code == 403
+
+
+def test_review_queue_bulk_category_approval_is_direction_safe() -> None:
+    client = TestClient(app)
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    account = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Checking", "account_type": "checking", "currency_code": "USD"}).json()
+    source = client.post("/v1/imports/sources", headers=headers, json={"account_id": account["account_id"], "name": "Bank"}).json()
+    client.post(f"/v1/imports/sources/{source['source_id']}/csv", headers=headers, json={"filename": "bank.csv", "csv_text": "date,description,amount\n2026-08-10,Market,-25.00\n2026-08-11,Cafe,-12.00\n2026-08-12,Employer,1000.00\n"})
+    rows = client.get("/v1/reconciliation/queue", headers=headers).json()
+    groceries = next(item for item in client.get("/v1/ledger/categories", headers=headers).json() if item["name"] == "Groceries")
+    expense_rows = [row["row_id"] for row in rows if row["amount_minor"] < 0]
+    approved = client.post("/v1/reconciliation/rows/create-batch", headers=headers, json={"row_ids": expense_rows, "category_id": groceries["category_id"]})
+    assert approved.status_code == 201 and len(approved.json()) == 2
+    remaining = client.get("/v1/reconciliation/queue", headers=headers).json()
+    assert len(remaining) == 1 and remaining[0]["amount_minor"] > 0
+    mixed = client.post("/v1/reconciliation/rows/create-batch", headers=headers, json={"row_ids": [remaining[0]["row_id"]], "category_id": groceries["category_id"]})
+    assert mixed.status_code == 422
+
+
+def test_review_queue_page_searches_filters_and_separates_transfers() -> None:
+    client = TestClient(app)
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    account = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Checking", "account_type": "checking", "currency_code": "USD"}).json()
+    source = client.post("/v1/imports/sources", headers=headers, json={"account_id": account["account_id"], "name": "Seven Month Import"}).json()
+    rows = ["date,description,amount"]
+    rows.extend(f"2026-08-{index + 1:02d},Store {index},-{10 + index}.00" for index in range(12))
+    rows.append("2026-08-13,Transfer to savings,-500.00")
+    imported = client.post(f"/v1/imports/sources/{source['source_id']}/csv", headers=headers, json={"filename": "history.csv", "csv_text": "\n".join(rows)})
+    assert imported.status_code == 201, imported.text
+
+    first = client.get("/v1/reconciliation/queue/page?queue_kind=standard&page=1&page_size=10", headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.json()["total_items"] == 12
+    assert first.json()["total_pages"] == 2
+    assert len(first.json()["items"]) == 10
+    second = client.get("/v1/reconciliation/queue/page?queue_kind=standard&page=2&page_size=10", headers=headers).json()
+    assert len(second["items"]) == 2
+    searched = client.get("/v1/reconciliation/queue/page?queue_kind=standard&search=Store%207&page_size=10", headers=headers).json()
+    assert searched["total_items"] == 1 and searched["items"][0]["raw_payee"] == "Store 7"
+    filtered = client.get(f"/v1/reconciliation/queue/page?queue_kind=standard&source_id={source['source_id']}&account_id={account['account_id']}&direction=outflow&date_from=2026-08-05&date_to=2026-08-06&page_size=10", headers=headers).json()
+    assert filtered["total_items"] == 2
+    transfers = client.get("/v1/reconciliation/queue/page?queue_kind=transfer&page_size=10", headers=headers).json()
+    assert transfers["total_items"] == 1 and transfers["items"][0]["raw_payee"] == "Transfer to savings"
+
+
+def test_review_queue_orders_same_day_opposite_transfers_together() -> None:
+    client = TestClient(app)
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    checking = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Checking", "account_type": "checking", "currency_code": "USD"}).json()
+    savings = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Savings", "account_type": "savings", "currency_code": "USD"}).json()
+    checking_source = client.post("/v1/imports/sources", headers=headers, json={"account_id": checking["account_id"], "name": "Checking CSV"}).json()
+    savings_source = client.post("/v1/imports/sources", headers=headers, json={"account_id": savings["account_id"], "name": "Savings CSV"}).json()
+    client.post(f"/v1/imports/sources/{checking_source['source_id']}/csv", headers=headers, json={"filename": "checking.csv", "csv_text": "date,description,amount\n2026-08-14,Transfer to savings,-500.00\n2026-08-13,Market,-20.00\n"})
+    client.post(f"/v1/imports/sources/{savings_source['source_id']}/csv", headers=headers, json={"filename": "savings.csv", "csv_text": "date,description,amount\n2026-08-14,Transfer from checking,500.00\n2026-08-14,Interest,1.00\n"})
+    rows = client.get("/v1/reconciliation/queue", headers=headers).json()
+    assert [row["transaction_date"] for row in rows] == ["2026-08-14", "2026-08-14", "2026-08-14", "2026-08-13"]
+    transfer_indexes = [index for index, row in enumerate(rows) if abs(row["amount_minor"] or 0) == 50000]
+    assert transfer_indexes == [0, 1]
+
+
+def test_review_queue_local_ai_proposals_require_review(monkeypatch) -> None:
+    from app import routes
+
+    client = TestClient(app)
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    account = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Checking", "account_type": "checking", "currency_code": "USD"}).json()
+    source = client.post("/v1/imports/sources", headers=headers, json={"account_id": account["account_id"], "name": "Bank"}).json()
+    client.post(f"/v1/imports/sources/{source['source_id']}/csv", headers=headers, json={"filename": "bank.csv", "csv_text": "date,description,amount\n2026-08-10,Market,-25.00\n"})
+    row = client.get("/v1/reconciliation/queue", headers=headers).json()[0]
+    groceries = next(item for item in client.get("/v1/ledger/categories", headers=headers).json() if item["name"] == "Groceries")
+    disabled = client.post("/v1/reconciliation/rows/category-suggestions", headers=headers, json={"row_ids": [row["row_id"]]})
+    assert disabled.status_code == 409
+    client.put("/v1/system/integrations", headers=headers, json={"ai_enabled": True, "ai_provider": "lm_studio", "ai_base_url": "http://127.0.0.1:1234", "ai_model": "local-test"})
+    monkeypatch.setattr(routes, "ai_import_proposals", lambda db, household_id, rows, values: {str(rows[0].id): {"category_id": UUID(groceries["category_id"]), "category_name": "Groceries", "confidence_percent": 82, "evidence": "Merchant appears grocery-related.", "provider": "lm_studio", "model_version": "local-test"}})
+    suggested = client.post("/v1/reconciliation/rows/category-suggestions", headers=headers, json={"row_ids": [row["row_id"]]})
+    assert suggested.status_code == 200
+    proposal = suggested.json()[0]
+    assert proposal["proposed_category_name"] == "Groceries" and proposal["automation_confidence"] == 82
+    assert proposal["status"] == "unmatched"
+    assert client.get("/v1/ledger/transactions", headers=headers).json() == []
 
 
 def test_phase4_import_surfaces_missing_expected_bill_exception() -> None:
@@ -1489,14 +1745,20 @@ def test_phase6b_new_and_manual_rule_runs_recalculate_pending_review() -> None:
     updated = client.patch(
         f"/v1/automation/rules/{rule['rule_id']}",
         headers=headers,
-        json={"description_pattern": "*market*", "priority": 250, "account_id": account["account_id"], "source_id": source["source_id"]},
+        json={"rule_name": "Neighborhood markets", "description_pattern": "*market*", "priority": 250, "account_id": account["account_id"], "source_id": source["source_id"]},
     )
     assert updated.status_code == 200
     assert updated.json()["description_pattern"] == "*market*"
+    assert updated.json()["rule_name"] == "Neighborhood markets"
     assert updated.json()["priority"] == 250
+    client.post(
+        f"/v1/imports/sources/{source['source_id']}/csv",
+        headers=headers,
+        json={"filename": "another-market.csv", "csv_text": "date,description,amount\n2026-08-15,Northside Market #42,-30.00\n"},
+    )
     rerun = client.post(f"/v1/automation/rules/{rule['rule_id']}/run", headers=headers)
     assert rerun.status_code == 200
-    assert rerun.json()["preview_unconfirmed_count"] == 1
+    assert rerun.json()["preview_unconfirmed_count"] == 2
 
 
 def test_phase6b_pending_import_rows_become_confirmable_transfer_pair() -> None:
@@ -1529,7 +1791,7 @@ def test_phase6b_resolve_transfer_supports_tracked_external_and_real_spending() 
     checking = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Checking", "account_type": "checking", "currency_code": "USD"}).json()
     savings = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Savings", "account_type": "savings", "currency_code": "USD"}).json()
     source = client.post("/v1/imports/sources", headers=headers, json={"account_id": checking["account_id"], "name": "Checking CSV"}).json()
-    debt = client.post("/v1/obligations/debts", headers=headers, json={"name": "Auto loan", "lender": "Local credit union", "balance_minor": 1250000, "apr_basis_points": 550, "minimum_payment_minor": 22500, "due_day": 4, "next_due_date": "2026-08-04", "currency_code": "USD"}).json()
+    debt = client.post("/v1/obligations/debts", headers=headers, json={"name": "Auto loan", "lender": "Local credit union", "balance_minor": 1250000, "balance_as_of_date": "2026-07-31", "apr_basis_points": 550, "minimum_payment_minor": 22500, "due_day": 4, "next_due_date": "2026-08-04", "currency_code": "USD"}).json()
     imported = client.post(f"/v1/imports/sources/{source['source_id']}/csv", headers=headers, json={"filename": "movements.csv", "csv_text": "date,description,amount\n2026-08-01,Move to savings,-100.00\n2026-08-02,Move to external brokerage,-50.00\n2026-08-03,Zelle rent,-75.00\n2026-08-04,Auto loan payment,-225.00\n"})
     assert imported.status_code == 201
     queue = client.get("/v1/reconciliation/queue", headers=headers).json()
@@ -1552,11 +1814,20 @@ def test_phase6b_resolve_transfer_supports_tracked_external_and_real_spending() 
     payment_payload = {"row_id": payment["row_id"], "resolution_type": "payment", "category_id": housing["category_id"]}
     assert client.post("/v1/automation/transfer-resolutions/preview", headers=headers, json=payment_payload).status_code == 200
     assert client.post("/v1/automation/transfer-resolutions", headers=headers, json=payment_payload).status_code == 201
-    loan_payload = {"row_id": loan_payment["row_id"], "resolution_type": "loan_or_repayment", "debt_id": debt["debt_id"]}
+    loan_payload = {"row_id": loan_payment["row_id"], "resolution_type": "loan_or_repayment", "debt_id": debt["debt_id"], "category_id": housing["category_id"], "principal_amount_minor": 15000}
     loan_preview = client.post("/v1/automation/transfer-resolutions/preview", headers=headers, json=loan_payload)
-    assert loan_preview.status_code == 200 and loan_preview.json()["spending_removed_minor"] == 22500
-    assert client.post("/v1/automation/transfer-resolutions", headers=headers, json=loan_payload).status_code == 201
+    assert loan_preview.status_code == 200 and loan_preview.json()["spending_removed_minor"] == 0
+    loan_result = client.post("/v1/automation/transfer-resolutions", headers=headers, json=loan_payload)
+    assert loan_result.status_code == 201
+    updated_debt = next(item for item in client.get("/v1/obligations/debts", headers=headers).json() if item["debt_id"] == debt["debt_id"])
+    assert updated_debt["balance_minor"] == 1235000
+    assert updated_debt["balance_anchor_minor"] == 1250000
+    recalculated = client.post(f"/v1/obligations/debts/{debt['debt_id']}/recalculate", headers=headers)
+    assert recalculated.status_code == 200 and recalculated.json()["balance_minor"] == 1235000
+    loan_transaction = next(item for item in client.get("/v1/ledger/transactions", headers=headers).json() if item["transaction_id"] == loan_result.json()["transaction_id"])
+    assert loan_transaction["activity_type"] == "debt_payment"
+    assert loan_transaction["splits"][0]["category_name"] == "Housing"
     report = client.get("/v1/reports/spending?date_from=2026-08-01&date_to=2026-08-31&currency_code=USD&ownership_scope=household", headers=headers).json()
-    assert report["totals"]["spending_minor"] == 7500
+    assert report["totals"]["spending_minor"] == 30000
     assert report["totals"]["debt_payments_minor"] == 22500
     assert report["counts"]["transfers_excluded"] == 3

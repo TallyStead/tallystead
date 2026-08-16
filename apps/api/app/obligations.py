@@ -5,7 +5,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import BillInstance, BillPaymentLink, IncomeEvent, utc_now
+from app.models import BillInstance, BillPaymentLink, Debt, IncomeEvent, LedgerTransaction, utc_now
 from app.schemas import BillInstanceResponse, IncomeEventResponse, PaymentLinkResponse
 
 
@@ -78,3 +78,22 @@ def income_event_response(item: IncomeEvent) -> IncomeEventResponse:
 
 def transaction_linked_total(db: Session, transaction_id) -> int:
     return db.scalar(select(func.coalesce(func.sum(BillPaymentLink.amount_minor), 0)).where(BillPaymentLink.transaction_id == transaction_id)) or 0
+
+
+def recalculate_debt_balance(db: Session, debt: Debt) -> int:
+    anchor = debt.balance_anchor_minor if debt.balance_anchor_minor is not None else debt.balance_minor
+    query = (
+        select(BillPaymentLink, LedgerTransaction)
+        .join(BillInstance, BillInstance.id == BillPaymentLink.bill_instance_id)
+        .join(LedgerTransaction, LedgerTransaction.id == BillPaymentLink.transaction_id)
+        .where(
+            BillInstance.debt_id == debt.id,
+            LedgerTransaction.voided_at.is_(None),
+            LedgerTransaction.status != "reversed",
+        )
+    )
+    if debt.balance_as_of_date is not None:
+        query = query.where(LedgerTransaction.transaction_date > debt.balance_as_of_date)
+    principal = sum(link.principal_amount_minor if link.principal_amount_minor is not None else link.amount_minor for link, _ in db.execute(query).all())
+    debt.balance_minor = max(0, anchor - principal)
+    return principal

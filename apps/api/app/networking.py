@@ -27,6 +27,7 @@ def default_configuration() -> dict:
         "internal_url": None,
         "access_mode": "lan",
         "trusted_proxy_cidrs": [],
+        "forward_auth_enabled": False,
         "certificate_mode": "local_ca",
         "dns_provider": None,
         "dns_zone": None,
@@ -64,6 +65,7 @@ def public_configuration(config: dict | None) -> dict | None:
         "internal_url": config.get("internal_url"),
         "access_mode": config.get("access_mode"),
         "trusted_proxy_cidrs": config.get("trusted_proxy_cidrs", []),
+        "forward_auth_enabled": bool(config.get("forward_auth_enabled")),
         "certificate_mode": config.get("certificate_mode"),
         "dns_provider": config.get("dns_provider"),
         "dns_zone": config.get("dns_zone"),
@@ -113,6 +115,9 @@ def validation_checks(config: dict) -> list[dict]:
     add("trusted_proxy_cidrs", cidrs_valid, "Trusted proxy entries are valid CIDRs." if cidrs_valid else "One or more trusted proxy entries are not valid CIDRs.")
     if config.get("access_mode") in {"reverse_proxy", "internet"}:
         add("proxy_boundary", bool(config.get("trusted_proxy_cidrs")) or config.get("access_mode") == "internet", "Trusted proxy boundary is explicit." if config.get("trusted_proxy_cidrs") else "Direct internet mode has no upstream proxy CIDRs; forwarded headers will be ignored.", warning=config.get("access_mode") == "internet")
+    if config.get("forward_auth_enabled"):
+        forward_auth_ready = config.get("access_mode") == "reverse_proxy" and bool(config.get("trusted_proxy_cidrs"))
+        add("forward_auth_boundary", forward_auth_ready, "Forwarded identity is limited to configured reverse proxies." if forward_auth_ready else "Forwarded identity requires reverse-proxy mode and at least one trusted proxy CIDR.")
     if config.get("certificate_mode") == "cloudflare_dns":
         token_ok = bool(config.get("cloudflare_api_token") and TOKEN_PATTERN.fullmatch(config["cloudflare_api_token"]))
         add("cloudflare_token", token_ok, "A write-only Cloudflare API token is configured." if token_ok else "Provide a valid scoped Cloudflare API token.")
@@ -129,6 +134,22 @@ def validation_checks(config: dict) -> list[dict]:
 
 def configuration_ready(checks: list[dict]) -> bool:
     return all(item["status"] != "fail" for item in checks)
+
+
+def trusted_forward_auth_source(source: str | None, config: dict) -> bool:
+    if not source or not config.get("forward_auth_enabled") or config.get("access_mode") != "reverse_proxy":
+        return False
+    try:
+        address = ipaddress.ip_address(source)
+    except ValueError:
+        return False
+    for value in config.get("trusted_proxy_cidrs", []):
+        try:
+            if address in ipaddress.ip_network(value, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _site_hosts(config: dict) -> list[str]:
@@ -159,10 +180,17 @@ def render_caddyfile(config: dict) -> str:
     elif mode == "cloudflare_dns":
         tls = f"\n  tls {{\n    dns cloudflare {config['cloudflare_api_token']}\n    resolvers 1.1.1.1\n  }}"
     hosts = ", ".join(f"https://{host}" for host in _site_hosts(config))
-    return f"""{global_options}
-
-{hosts} {{{tls}
-  header {{
+    if config.get("forward_auth_enabled"):
+        forward_auth_headers = """    header_up X-Tallystead-Forward-Auth-Subject {http.request.header.Remote-User}
+    header_up X-Tallystead-Forward-Auth-Email {http.request.header.Remote-Email}
+    header_up X-Tallystead-Forward-Auth-Name {http.request.header.Remote-Name}
+    header_up X-Tallystead-Forward-Auth-Source {http.request.remote.host}"""
+    else:
+        forward_auth_headers = """    header_up -X-Tallystead-Forward-Auth-Subject
+    header_up -X-Tallystead-Forward-Auth-Email
+    header_up -X-Tallystead-Forward-Auth-Name
+    header_up -X-Tallystead-Forward-Auth-Source"""
+    routes = """  header {
     -Server
     -X-Powered-By
     Strict-Transport-Security "max-age=31536000"
@@ -171,15 +199,28 @@ def render_caddyfile(config: dict) -> str:
     Referrer-Policy "no-referrer"
     Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
     Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
-  }}
+  }
   @api path /v1/* /health /docs* /openapi.json
-  reverse_proxy @api api:8000 {{
+  reverse_proxy @api api:8000 {
     flush_interval -1
-    header_up Host {{http.request.host}}
-    header_up X-Tallystead-Proxy-Token {{env.TALLYSTEAD_PROXY_TOKEN}}
-  }}
+    header_up Host {http.request.host}
+    header_up X-Tallystead-Proxy-Token {env.TALLYSTEAD_PROXY_TOKEN}
+__FORWARD_AUTH_HEADERS__
+    header_up -Remote-User
+    header_up -Remote-Email
+    header_up -Remote-Name
+    header_up -Remote-Role
+  }
 
-  reverse_proxy web:3000
+  reverse_proxy web:3000""".replace("__FORWARD_AUTH_HEADERS__", forward_auth_headers)
+    return f"""{global_options}
+
+{hosts} {{{tls}
+{routes}
+}}
+
+http://:8080 {{
+{routes}
 }}
 """
 

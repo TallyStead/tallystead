@@ -38,7 +38,18 @@ Read these files before making a substantial change:
 - `tests/fixtures` contains fictional or fully anonymized cross-service fixtures.
 - `scripts` contains repository, security, brand, and upgrade validation.
 - The web interface does not belong in this repository. Coordinate API contract changes with `tallystead/tallystead-web`, but do not recreate `apps/web` here.
-- `packages/contracts` is reserved for future shared, generated, or platform-neutral contracts. Do not move server authority or domain calculations into it.
+- `packages/contracts` contains the generated, platform-neutral OpenAPI contract and typed TypeScript transport client. Regenerate it with API changes, keep its package version aligned with the server release, and do not move server authority or domain calculations into it.
+
+## Tallystead ecosystem coordination
+
+This repository is one part of a sibling-repository ecosystem. When a request may cross boundaries, inspect the affected sibling repository and its `AGENTS.md` before editing it.
+
+- `../tallystead-web` owns the independently released Next.js household client. Coordinate used endpoint changes, client types, compatibility tests, and release order there.
+- `../tallystead-website` owns the static public website and public marketing copy. Update it only when public claims or website behavior are actually in scope.
+- `../tallystead-branding` owns canonical logos, icons, colors, fonts, and brand policy. Consume approved/versioned assets; do not redefine brand masters here.
+- `../tallystead-internal` owns private specifications, plans, decisions, trackers, and working mockups. It must never become a build/runtime dependency or a public documentation target.
+
+For cross-repository features, identify every affected repository before implementation, keep financial and authorization authority here, verify independently released client compatibility, and state the intended release sequence. Do not copy private internal material into this public repository.
 
 Never read, copy, modify, print, or commit private runtime material unless the user explicitly places a specific sanitized file in scope. This includes:
 

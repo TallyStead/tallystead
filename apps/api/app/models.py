@@ -84,6 +84,22 @@ class SessionToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class ExternalIdentity(Base):
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "subject", name="uq_external_identity_provider_subject"),
+        UniqueConstraint("provider", "user_id", name="uq_external_identity_provider_user"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(40))
+    subject: Mapped[str] = mapped_column(String(320))
+    email_at_link: Mapped[str] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class PasskeyCredential(Base):
     __tablename__ = "passkey_credentials"
 
@@ -347,6 +363,8 @@ class Debt(Base):
     name: Mapped[str] = mapped_column(String(160))
     lender: Mapped[str | None] = mapped_column(String(200), nullable=True)
     balance_minor: Mapped[int] = mapped_column(Integer)
+    balance_anchor_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    balance_as_of_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     apr_basis_points: Mapped[int] = mapped_column(Integer, default=0)
     minimum_payment_minor: Mapped[int] = mapped_column(Integer)
     due_day: Mapped[int] = mapped_column(Integer)
@@ -389,6 +407,7 @@ class BillPaymentLink(Base):
     bill_instance_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bill_instances.id", ondelete="CASCADE"), index=True)
     transaction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ledger_transactions.id", ondelete="RESTRICT"), index=True)
     amount_minor: Mapped[int] = mapped_column(Integer)
+    principal_amount_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -656,6 +675,7 @@ class CategoryRule(Base):
     category_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"), index=True)
     match_type: Mapped[str] = mapped_column(String(24))
     match_value: Mapped[str] = mapped_column(String(300))
+    rule_name: Mapped[str] = mapped_column(String(160))
     direction: Mapped[str] = mapped_column(String(12))
     account_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("financial_accounts.id", ondelete="CASCADE"), nullable=True, index=True)
     source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("import_sources.id", ondelete="CASCADE"), nullable=True, index=True)

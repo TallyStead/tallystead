@@ -88,15 +88,14 @@ def matching_category_rule(db: Session, row: ImportRow, source: ImportSource) ->
     rules = db.scalars(select(CategoryRule).where(CategoryRule.household_id == row.household_id, CategoryRule.direction == direction, CategoryRule.is_active.is_(True), CategoryRule.auto_apply.is_(True))).all()
     matches: list[tuple[int, int, CategoryRule]] = []
     for rule in rules:
-        base_match = (rule.match_type == "merchant" and merchant is not None and rule.match_value == str(merchant.id)) or (rule.match_type == "payee" and payee and rule.match_value.casefold() == payee)
+        exact_match = (rule.match_type == "merchant" and merchant is not None and rule.match_value == str(merchant.id)) or (rule.match_type == "payee" and payee and rule.match_value.casefold() == payee)
+        base_match = _description_matches(rule.description_pattern, payee) if rule.description_pattern else exact_match
         if not base_match or (rule.account_id and rule.account_id != source.account_id) or (rule.source_id and rule.source_id != source.id):
             continue
         absolute = abs(row.amount_minor)
         if rule.amount_min_minor is not None and absolute < rule.amount_min_minor:
             continue
         if rule.amount_max_minor is not None and absolute > rule.amount_max_minor:
-            continue
-        if not _description_matches(rule.description_pattern, payee):
             continue
         specificity = sum((merchant is not None and rule.match_type == "merchant", rule.account_id is not None, rule.source_id is not None, rule.amount_min_minor is not None, rule.amount_max_minor is not None, rule.description_pattern is not None))
         matches.append((specificity, -rule.priority, rule))
@@ -383,7 +382,7 @@ def learn_rule_from_row(db: Session, row: ImportRow, source: ImportSource, categ
         rule.is_active = True
         rule.auto_apply = True
         return rule
-    rule = CategoryRule(household_id=row.household_id, category_id=category_id, match_type=match_type, match_value=match_value, direction=direction, account_id=source.account_id, source_id=source.id, priority=100, auto_apply=True, created_from_action="apply_and_remember", created_by_user_id=actor_user_id)
+    rule = CategoryRule(household_id=row.household_id, category_id=category_id, match_type=match_type, match_value=match_value, rule_name=f"{(row.normalized_payee or row.raw_payee or 'New rule').strip()} rule", direction=direction, account_id=source.account_id, source_id=source.id, priority=100, auto_apply=True, created_from_action="apply_and_remember", created_by_user_id=actor_user_id)
     db.add(rule)
     db.flush()
     return rule

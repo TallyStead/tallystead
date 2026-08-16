@@ -2,10 +2,13 @@
 
 Tallystead is a local-first, self-hosted household financial management server. It provides deterministic financial services, local document processing, optional local AI, and a deployment boundary for the separately released Tallystead Web client.
 
+See [CHANGELOG.md](CHANGELOG.md) for versioned server, contract, migration, and deployment changes.
+
 ## Repository layout
 
 - `apps/api` — FastAPI API and domain-service entry point.
 - `apps/worker` — worker/scheduler entry point (scaffolded with the API runtime initially).
+- `packages/contracts` — generated OpenAPI contract and typed TypeScript client package.
 - `infrastructure/compose` — Docker Compose local/home-server stack.
 - `docs` — product, architecture, access-control, and operational documentation.
 - `tests` — cross-service scenario tests as they are introduced.
@@ -48,11 +51,32 @@ Deployment references:
 ## Quality checks
 
 - API: `cd apps/api && ruff check . && pytest`
+- Contracts: `python3 scripts/export_openapi.py --check && npm --prefix packages/contracts ci && npm --prefix packages/contracts test`
 - Deployment configuration: `docker compose --env-file infrastructure/compose/.env.example -f infrastructure/compose/compose.yaml config --quiet`
 - Release deployment configuration: `docker compose --env-file infrastructure/compose/.env.release.example -f infrastructure/compose/compose.release.yaml config --quiet`
 - Brand references: `python3 scripts/check_brand_references.py`
 - Repository/secret policy: `python3 scripts/check_repository_security.py`
 - Earlier-database upgrade test: `python3 scripts/test_upgrade_path.py` with a disposable PostgreSQL URL
+
+## Coordinated versions
+
+The sibling `tallystead-development` tooling repository coordinates the server-owned API, Caddy, backup, and `@tallystead/contracts` version together with the independently released web version:
+
+```sh
+python3 ../tallystead-development/set_version.py 0.2.0 --web-version 0.2.0
+```
+
+Omit `--web-version` when web should use the same version. Use `--dry-run` to preview or `--check` in validation. The command regenerates and builds the OpenAPI/TypeScript contract by default.
+
+For routine semantic-version bumps, the script can calculate the next version from the checked-in server and web package versions:
+
+```sh
+python3 ../tallystead-development/set_version.py next patch
+python3 ../tallystead-development/set_version.py next minor
+python3 ../tallystead-development/set_version.py next major
+```
+
+Server/contracts and web are each bumped from their own current version. Pass `--web-version` to override the calculated web version.
 
 ## License
 

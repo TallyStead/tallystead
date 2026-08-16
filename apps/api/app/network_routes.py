@@ -217,8 +217,56 @@ def rollback_network_configuration(
 @router.get("/system/network/effective-request", response_model=EffectiveRequestResponse, tags=["system"])
 def effective_request_diagnostic(request: Request, db: DbSession, _: Annotated[Membership, Depends(owner_membership)]) -> EffectiveRequestResponse:
     config = active_configuration(db)
-    result = effective_request(request.client.host if request.client else None, {key.lower(): value for key, value in request.headers.items()}, config)
-    return EffectiveRequestResponse(effective_url=f"{result.scheme}://{result.host}", scheme=result.scheme, host=result.host, source_address=result.client_ip, forwarded_headers_trusted=result.forwarded_headers_trusted)
+    transport_address = request.client.host if request.client else None
+    incoming = {key.lower(): value for key, value in request.headers.items()}
+    result = effective_request(transport_address, incoming, config)
+    sensitive = {"authorization", "cookie", "proxy-authorization", "x-tallystead-proxy-token"}
+    safe_values = {
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "connection",
+        "content-type",
+        "host",
+        "origin",
+        "referer",
+        "user-agent",
+        "via",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-port",
+        "x-forwarded-proto",
+        "x-real-ip",
+        "x-tallystead-forward-auth-email",
+        "x-tallystead-forward-auth-name",
+        "x-tallystead-forward-auth-source",
+        "x-tallystead-forward-auth-subject",
+    }
+    headers = []
+    for name, value in sorted(incoming.items()):
+        if name in sensitive:
+            displayed = "[redacted]"
+        elif name in safe_values:
+            displayed = value[:1000]
+        else:
+            displayed = "[value omitted]"
+        headers.append({"name": name, "value": displayed})
+    if result.forwarded_headers_trusted:
+        route = "trusted_proxy"
+    elif any(name.startswith("x-forwarded-") for name in incoming):
+        route = "untrusted_forwarded_headers"
+    else:
+        route = "direct"
+    return EffectiveRequestResponse(
+        effective_url=f"{result.scheme}://{result.host}",
+        scheme=result.scheme,
+        host=result.host,
+        source_address=result.client_ip,
+        transport_address=transport_address,
+        connection_route=route,
+        forwarded_headers_trusted=result.forwarded_headers_trusted,
+        headers=headers,
+    )
 
 
 @router.get("/system/network/caddy-root", tags=["system"])

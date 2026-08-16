@@ -10,7 +10,7 @@ on:
       web_image:
         description: Exact tested Tallystead Web image tag or digest
         required: true
-        default: ghcr.io/tallystead/tallystead-web:0.1.0
+        default: ghcr.io/tallystead/tallystead-web:0.2.0
         type: string
       prerelease:
         description: Mark the draft as a prerelease
@@ -106,18 +106,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Authenticate to GitHub Container Registry
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
-
-      - name: Build server images and pull the exact web image
+      - name: Build server images
         run: |
           set -euo pipefail
           docker build --file apps/api/Dockerfile --tag tallystead-api:release .
           docker build --file infrastructure/backup/Dockerfile --tag tallystead-backup:release .
           docker build --file infrastructure/compose/Caddy.Dockerfile --tag tallystead-caddy:release .
-          docker pull "${WEB_IMAGE}"
+
+      - name: Pull the exact public web image
+        run: |
+          set -euo pipefail
+          if ! docker pull "${WEB_IMAGE}"; then
+            echo "Could not pull ${WEB_IMAGE} anonymously." >&2
+            echo "Confirm that the selected tallystead-web package exists and has public visibility before releasing it." >&2
+            exit 1
+          fi
 
       - name: Scan API release image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -181,18 +184,21 @@ jobs:
           bundle="release-artifacts/tallystead-${VERSION}-server"
           mkdir -p "${bundle}/docs"
           cp infrastructure/compose/compose.release.yaml "${bundle}/compose.yaml"
+          cp infrastructure/compose/compose.pangolin.yaml "${bundle}/compose.pangolin.yaml"
           cp infrastructure/compose/Caddyfile "${bundle}/Caddyfile"
           sed \
             -e "s/^TALLYSTEAD_VERSION=.*/TALLYSTEAD_VERSION=${IMAGE_TAG}/" \
             -e "s#^TALLYSTEAD_IMAGE_REGISTRY=.*#TALLYSTEAD_IMAGE_REGISTRY=${REGISTRY}#" \
             -e "s#^TALLYSTEAD_WEB_IMAGE=.*#TALLYSTEAD_WEB_IMAGE=${WEB_IMAGE}#" \
             infrastructure/compose/.env.release.example > "${bundle}/.env.example"
-          for document in BACKUP_AND_RESTORE NETWORK_AND_CERTIFICATES PROXMOX_DEPLOYMENT RELEASE_INSTALL; do
-            sed 's#infrastructure/compose/compose.yaml#compose.yaml#g' \
+          for document in BACKUP_AND_RESTORE NETWORK_AND_CERTIFICATES NETWORK_CONFIGURATION_REFERENCE PROXMOX_DEPLOYMENT RELEASE_INSTALL; do
+            sed -e 's#infrastructure/compose/compose.yaml#compose.yaml#g' \
+              -e 's#infrastructure/compose/compose.pangolin.yaml#compose.pangolin.yaml#g' \
               "docs/operations/${document}.md" > "${bundle}/docs/${document}.md"
           done
           cp "${bundle}/.env.example" "${bundle}/.env"
           docker compose --env-file "${bundle}/.env" --file "${bundle}/compose.yaml" config --quiet
+          docker compose --env-file "${bundle}/.env" --file "${bundle}/compose.yaml" --file "${bundle}/compose.pangolin.yaml" config --quiet
           rm "${bundle}/.env"
           tar -czf "${bundle}.tar.gz" -C release-artifacts "$(basename "${bundle}")"
           rm -rf "${bundle}"
@@ -202,8 +208,11 @@ jobs:
           )
 
       - name: Confirm image version is unused
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
           for component in api backup caddy; do
             image="${REGISTRY}/tallystead-${component}:${IMAGE_TAG}"
             if output="$(docker manifest inspect "${image}" 2>&1)"; then

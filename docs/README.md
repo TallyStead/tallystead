@@ -9,6 +9,7 @@ These documents describe the supported application, contributor contracts, secur
 - [Server foundation](architecture/SERVER_FOUNDATION.md)
 - [RBAC and access control](architecture/RBAC_AND_ACCESS_CONTROL.md)
 - [Brand and compatibility](architecture/BRAND_AND_COMPATIBILITY.md)
+- [API contracts and client generation](architecture/API_CONTRACTS.md)
 
 ## Financial and product behavior
 
@@ -36,6 +37,7 @@ These documents describe the supported application, contributor contracts, secur
 
 - [Release installation](operations/RELEASE_INSTALL.md)
 - [Network and certificates](operations/NETWORK_AND_CERTIFICATES.md)
+- [Network configuration reference](operations/NETWORK_CONFIGURATION_REFERENCE.md)
 - [Proxmox deployment](operations/PROXMOX_DEPLOYMENT.md)
 - [Backup and restore](operations/BACKUP_AND_RESTORE.md)
 - [Release operation](operations/RELEASING.md)

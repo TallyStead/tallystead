@@ -22,7 +22,7 @@ FastAPI server
 - The `tallystead-web` repository renders browser experiences and calls the API. It publishes an independently scanned, immutable container image and does not calculate balances, reserves, or authorization decisions.
 - `apps/api` exposes versioned API endpoints and contains the server-side domain/application services.
 - `apps/worker` contains asynchronous handlers. Each handler has an idempotency, retry, audit, and health contract.
-- FastAPI's OpenAPI document is the canonical client/server contract source. Introduce a generated client package when web or mobile clients begin consuming generated contracts.
+- FastAPI's OpenAPI document is the canonical client/server contract source. `packages/contracts` contains its deterministic OpenAPI snapshot and generated TypeScript client; CI rejects drift and common breaking changes. Swift and Kotlin clients generate from the same released OpenAPI document.
 - `infrastructure/compose` contains Docker deployment definitions only; it does not contain domain behavior.
 
 ## Data rules
