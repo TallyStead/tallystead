@@ -42,7 +42,7 @@ The rebrand must not force a destructive data migration, change a server origin,
 
 Environment variables, package names, health metadata, protocol headers, Caddy paths, generated backup names, demo identifiers, and new archive/export formats use Tallystead naming.
 
-Existing canonical server URLs are household-controlled identity values. Tallystead never silently rewrites a URL containing the former product name. Users may change a canonical URL only through the staged network workflow, with its passkey warning, readiness checks, and rollback protection.
+Existing canonical server URLs are household-controlled identity values. Tallystead never silently rewrites a URL containing the former product name. Operators change the canonical URL explicitly in `.env`; documentation warns that a hostname change may require passkey re-enrollment.
 
 ## Contributor rule
 

@@ -1,6 +1,6 @@
 {
   "name": "@tallystead/contracts",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Generated OpenAPI contract and typed client for Tallystead servers",
   "license": "AGPL-3.0-only",
   "type": "module",

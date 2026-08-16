@@ -39,7 +39,7 @@ Do not treat a container image or writable container layer as a backup.
 7. Start the Compose stack and wait for PostgreSQL and the API to report healthy.
 8. Complete first-run Owner setup through the canonical local HTTPS address.
 9. Export and trust the Caddy root on household devices when using local-CA mode.
-10. Configure the final canonical/internal URLs in **Settings → Server**, stage, test, and activate them.
+10. Configure the final canonical/internal URLs in `.env`, run `validate-network-config.sh`, and recreate API and Caddy. Use **Settings → Server** to verify the loaded read-only values and current connection.
 
 Keep `.env`, API keys, exported backups, and private certificates out of Git.
 
@@ -48,10 +48,10 @@ Keep `.env`, API keys, exported backups, and private certificates out of Git.
 For the reference reverse-proxy topology:
 
 - Canonical DNS points clients to the load balancer or approved private entry point.
-- Internal upstream DNS points the load balancer to the Tallystead VM/Caddy address.
+- Pangolin/Newt targets the Tallystead VM's restricted private HTTP ingress, or joins Caddy's private Docker network on the same host.
 - The load balancer preserves the canonical host and scheme.
 - Only the load balancer's exact addresses/CIDRs are configured as trusted proxies.
-- The load balancer verifies the Caddy certificate using either the exported persistent local CA or a Cloudflare DNS-01 certificate.
+- Caddy rejects proxy-ingress connections outside the exact trusted addresses/CIDRs; the public certificate remains at Pangolin.
 - PostgreSQL, MinIO API/console, web, API, and the Caddy administration socket remain private.
 
 Use split DNS so the canonical URL remains unchanged inside and outside the household network.
@@ -60,9 +60,9 @@ Use split DNS so the canonical URL remains unchanged inside and outside the hous
 
 - Allow SSH only from the administration network.
 - Allow the chosen HTTPS port only from household/VPN clients or the load balancer.
-- Allow port 80 only when intentionally using public HTTP-01.
+- Allow the configured proxy HTTP port only from the exact Pangolin/Newt source; never expose it to the internet.
 - Do not expose PostgreSQL 5432, MinIO 9000/9001, web 3000, API 8000, or any Docker/internal administration endpoint.
-- Restrict outbound traffic according to enabled features. Cloudflare DNS-01, software updates, SMTP/IMAP, and explicitly configured integrations require their corresponding destinations.
+- Restrict outbound traffic according to enabled features. Software updates, SMTP/IMAP, and explicitly configured integrations require their corresponding destinations.
 
 ## Backups
 
@@ -94,4 +94,3 @@ Quarterly restore drill:
 7. Remove the temporary snapshot after the upgrade is accepted.
 
 Never downgrade across a destructive database migration without the matching verified backup and release instructions.
-

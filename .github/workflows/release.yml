@@ -10,7 +10,7 @@ on:
       web_image:
         description: Exact tested Tallystead Web image tag or digest
         required: true
-        default: ghcr.io/tallystead/tallystead-web:0.2.0
+        default: ghcr.io/tallystead/tallystead-web:0.2.1
         type: string
       prerelease:
         description: Mark the draft as a prerelease
@@ -209,7 +209,10 @@ jobs:
           mkdir -p "${bundle}/docs"
           cp infrastructure/compose/compose.release.yaml "${bundle}/compose.yaml"
           cp infrastructure/compose/compose.pangolin.yaml "${bundle}/compose.pangolin.yaml"
+          cp infrastructure/compose/compose.pangolin-host.yaml "${bundle}/compose.pangolin-host.yaml"
           cp infrastructure/compose/Caddyfile "${bundle}/Caddyfile"
+          cp infrastructure/compose/validate-network-config.sh "${bundle}/validate-network-config.sh"
+          chmod +x "${bundle}/validate-network-config.sh"
           sed \
             -e "s/^TALLYSTEAD_VERSION=.*/TALLYSTEAD_VERSION=${IMAGE_TAG}/" \
             -e "s#^TALLYSTEAD_IMAGE_REGISTRY=.*#TALLYSTEAD_IMAGE_REGISTRY=${REGISTRY}#" \
@@ -223,6 +226,7 @@ jobs:
           cp "${bundle}/.env.example" "${bundle}/.env"
           docker compose --env-file "${bundle}/.env" --file "${bundle}/compose.yaml" config --quiet
           docker compose --env-file "${bundle}/.env" --file "${bundle}/compose.yaml" --file "${bundle}/compose.pangolin.yaml" config --quiet
+          docker compose --env-file "${bundle}/.env" --file "${bundle}/compose.yaml" --file "${bundle}/compose.pangolin-host.yaml" config --quiet
           rm "${bundle}/.env"
           tar -czf "${bundle}.tar.gz" -C release-artifacts "$(basename "${bundle}")"
           rm -rf "${bundle}"
