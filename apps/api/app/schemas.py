@@ -122,20 +122,6 @@ class SystemStatusResponse(BaseModel):
     latest_backup_at: str | None
 
 
-class NetworkConfigurationRequest(BaseModel):
-    canonical_url: str = Field(min_length=9, max_length=500)
-    internal_url: str | None = Field(default=None, max_length=500)
-    access_mode: str = Field(pattern="^(lan|reverse_proxy|vpn|internet)$")
-    trusted_proxy_cidrs: list[str] = Field(default_factory=list, max_length=32)
-    forward_auth_enabled: bool = False
-    certificate_mode: str = Field(pattern="^(local_ca|public_acme|cloudflare_dns|external_tls)$")
-    dns_provider: str | None = Field(default=None, pattern="^cloudflare$")
-    dns_zone: str | None = Field(default=None, max_length=255)
-    cloudflare_api_token: str | None = Field(default=None, max_length=512)
-    acme_email: EmailStr | None = None
-    internet_exposure_confirmed: bool = False
-
-
 class NetworkConfigurationResponse(BaseModel):
     canonical_url: str
     internal_url: str | None
@@ -143,23 +129,6 @@ class NetworkConfigurationResponse(BaseModel):
     trusted_proxy_cidrs: list[str]
     forward_auth_enabled: bool
     certificate_mode: str
-    dns_provider: str | None
-    dns_zone: str | None
-    cloudflare_configured: bool
-    acme_email: str | None
-    internet_exposure_confirmed: bool
-
-
-class NetworkCheckResponse(BaseModel):
-    name: str
-    status: str
-    detail: str
-
-
-class NetworkTestResponse(BaseModel):
-    ready: bool
-    tested_at: str
-    checks: list[NetworkCheckResponse]
 
 
 class CertificateStatusResponse(BaseModel):
@@ -171,12 +140,7 @@ class CertificateStatusResponse(BaseModel):
 
 
 class NetworkStatusResponse(BaseModel):
-    active: NetworkConfigurationResponse
-    staged: NetworkConfigurationResponse | None
-    last_known_good: NetworkConfigurationResponse | None
-    last_test: NetworkTestResponse | None
-    revision: int
-    canonical_change_warning: bool
+    configuration: NetworkConfigurationResponse
     certificate: CertificateStatusResponse
 
 

@@ -105,8 +105,8 @@ Local AI uses a direct backend-to-runtime connection over the trusted household 
 - Require authenticated sessions even on a trusted local network.
 - Keep remote access deferred until a separate security and threat-model decision is approved.
 - Use Caddy as the initial local TLS reverse proxy. Its local certificate authority must be trusted on each household client before passkeys are enabled; HTTPS is a browser requirement for WebAuthn outside the special `localhost` development case.
-- Use one database-backed canonical client URL and an optional internal HTTPS upstream URL. Stage and test changes before Caddy activation; keep the administration API on a permissioned Unix socket and retain a last known-good configuration.
-- Support Cloudflare DNS-01 with a zone-scoped, encrypted, write-only token and a custom Caddy build; do not persist the token in Caddy's dynamic configuration state.
+- Use one environment-owned canonical client URL and an optional internal HTTPS recovery URL. Validate changes from the host before recreating Caddy and API; do not create a second database source of truth.
+- Support externally terminated public TLS through a narrowly trusted reverse proxy while retaining local-CA HTTPS for direct household recovery.
 - Direct internet mode requires explicit Owner acknowledgment and the Phase 7 readiness controls; it is never inferred from DNS or proxy headers.
 
 ### Client connection model

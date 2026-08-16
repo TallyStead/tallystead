@@ -176,68 +176,27 @@ def test_server_identity_exposes_canonical_local_url() -> None:
     assert response.json()["api_version"] == "v1"
 
 
-def test_phase6a_owner_can_stage_test_apply_and_restore_network_identity() -> None:
+def test_network_configuration_is_read_only_and_environment_owned(monkeypatch) -> None:
+    from app.config import settings as runtime_settings
+
+    monkeypatch.setattr(runtime_settings, "public_url", "https://ledger.example.test")
+    monkeypatch.setattr(runtime_settings, "internal_url", "https://service.example.test")
+    monkeypatch.setattr(runtime_settings, "access_mode", "reverse_proxy")
+    monkeypatch.setattr(runtime_settings, "trusted_proxy_cidrs", "10.20.0.9/32")
+    monkeypatch.setattr(runtime_settings, "forward_auth_enabled", True)
+    monkeypatch.setattr(runtime_settings, "certificate_mode", "external_tls")
     client = TestClient(app)
     owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
     headers = {"Authorization": f"Bearer {owner['access_token']}"}
-    original_url = client.get("/v1/server/identity").json()["public_url"]
-    payload = {
-        "canonical_url": "https://ledger.example.test",
-        "internal_url": "https://service.example.test",
-        "access_mode": "reverse_proxy",
-        "trusted_proxy_cidrs": ["10.20.0.0/24"],
-        "certificate_mode": "local_ca",
-        "dns_provider": None,
-        "dns_zone": None,
-        "cloudflare_api_token": None,
-        "acme_email": None,
-        "internet_exposure_confirmed": False,
+    response = client.get("/v1/system/network", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["configuration"] == {
+        "canonical_url": "https://ledger.example.test", "internal_url": "https://service.example.test",
+        "access_mode": "reverse_proxy", "trusted_proxy_cidrs": ["10.20.0.9/32"],
+        "forward_auth_enabled": True, "certificate_mode": "external_tls",
     }
-    staged = client.put("/v1/system/network/stage", headers=headers, json=payload)
-    assert staged.status_code == 200
-    assert staged.json()["staged"]["canonical_url"] == payload["canonical_url"]
-    tested = client.post("/v1/system/network/test", headers=headers)
-    assert tested.status_code == 200 and tested.json()["ready"] is True
-    applied = client.post("/v1/system/network/apply", headers=headers)
-    assert applied.status_code == 200
-    assert applied.json()["active"]["canonical_url"] == payload["canonical_url"]
-    assert client.get("/v1/server/identity").json()["public_url"] == payload["canonical_url"]
-    restored = client.post("/v1/system/network/rollback", headers=headers)
-    assert restored.status_code == 200
-    assert restored.json()["active"]["canonical_url"] == original_url
-
-
-def test_phase6a_cloudflare_credentials_are_encrypted_write_only_and_scoped() -> None:
-    from app.networking import render_caddyfile
-
-    client = TestClient(app)
-    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
-    headers = {"Authorization": f"Bearer {owner['access_token']}"}
-    token = "phase6a-cloudflare-token-abcdefghijklmnopqrstuvwxyz"
-    payload = {
-        "canonical_url": "https://ledger.example.com",
-        "internal_url": "https://service.example.com",
-        "access_mode": "internet",
-        "trusted_proxy_cidrs": [],
-        "certificate_mode": "cloudflare_dns",
-        "dns_provider": "cloudflare",
-        "dns_zone": "example.com",
-        "cloudflare_api_token": token,
-        "acme_email": "owner@example.com",
-        "internet_exposure_confirmed": True,
-    }
-    staged = client.put("/v1/system/network/stage", headers=headers, json=payload)
-    assert staged.status_code == 200, staged.text
-    assert "cloudflare_api_token" not in staged.text
-    assert staged.json()["staged"]["cloudflare_configured"] is True
-    with TestSession() as db:
-        stored = db.get(SystemSetting, "network_configuration")
-        assert stored is not None and token not in stored.encrypted_value
-    rendered = render_caddyfile(payload)
-    assert "dns cloudflare" in rendered and "persist_config off" in rendered
-    assert "trusted_proxies" not in rendered
-    assert "http://:8080" in rendered
-    assert rendered.count("reverse_proxy web:3000") == 2
+    assert client.put("/v1/system/network/stage", headers=headers, json={}).status_code == 404
+    assert client.get("/v1/server/identity").json()["public_url"] == "https://ledger.example.test"
 
 
 def test_phase6a_forwarded_headers_require_caddy_network_and_shared_secret(monkeypatch) -> None:
@@ -348,48 +307,19 @@ def test_transaction_page_searches_filters_and_pages_complete_ledger() -> None:
     assert invalid_dates.status_code == 422
 
 
-def test_phase6a_failed_activation_retains_active_configuration(monkeypatch) -> None:
-    from app import network_routes
-    from app.networking import active_configuration, load_network_state, save_network_state
-
-    client = TestClient(app)
-    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
-    headers = {"Authorization": f"Bearer {owner['access_token']}"}
-    staged = {"canonical_url": "https://broken.example.test", "internal_url": None, "access_mode": "lan", "trusted_proxy_cidrs": [], "certificate_mode": "local_ca", "dns_provider": None, "dns_zone": None, "cloudflare_api_token": None, "acme_email": None, "internet_exposure_confirmed": False}
-    with TestSession() as db:
-        state = load_network_state(db)
-        original = active_configuration(db)
-        state["staged"] = staged
-        state["last_test"] = {"ready": True, "tested_at": utc_now().isoformat(), "checks": [], "configuration_fingerprint": network_routes.fingerprint(staged)}
-        save_network_state(db, state, UUID(owner["user_id"]))
-    monkeypatch.setattr(network_routes, "load_or_fail", lambda _: (_ for _ in ()).throw(OSError("activation failed")))
-    failed = client.post("/v1/system/network/apply", headers=headers)
-    assert failed.status_code == 409
-    with TestSession() as db:
-        assert active_configuration(db)["canonical_url"] == original["canonical_url"]
-
-
 def test_pangolin_forward_auth_links_only_an_existing_active_member(monkeypatch) -> None:
     from app.config import settings as runtime_settings
-    from app.networking import load_network_state, save_network_state
 
     monkeypatch.setattr(runtime_settings, "caddy_proxy_cidrs", "127.0.0.0/8")
     monkeypatch.setattr(runtime_settings, "proxy_shared_secret", "test-proxy-secret")
+    monkeypatch.setattr(runtime_settings, "public_url", "https://tallystead.example.test")
+    monkeypatch.setattr(runtime_settings, "access_mode", "reverse_proxy")
+    monkeypatch.setattr(runtime_settings, "trusted_proxy_cidrs", "10.55.0.0/24")
+    monkeypatch.setattr(runtime_settings, "forward_auth_enabled", True)
     client = TestClient(app, client=("127.0.0.1", 50000))
     owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
     owner_headers = {"Authorization": f"Bearer {owner['access_token']}"}
     member = client.post("/v1/household/members", headers=owner_headers, json={"email": "member@example.com", "display_name": "Member", "password": "another-long-local-password", "role": "viewer"}).json()
-    with TestSession() as db:
-        state = load_network_state(db)
-        state["active"] = {
-            **state["active"],
-            "canonical_url": "https://tallystead.example.test",
-            "access_mode": "reverse_proxy",
-            "trusted_proxy_cidrs": ["10.55.0.0/24"],
-            "forward_auth_enabled": True,
-            "certificate_mode": "external_tls",
-        }
-        save_network_state(db, state, UUID(owner["user_id"]))
     proxy_headers = {
         "Host": "api:8000",
         "X-Forwarded-Host": "tallystead.example.test",

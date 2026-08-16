@@ -2505,23 +2505,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/system/network/apply": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Apply Network Configuration */
-        post: operations["apply_network_configuration_v1_system_network_apply_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/system/network/caddy-root": {
         parameters: {
             query?: never;
@@ -2550,57 +2533,6 @@ export interface paths {
         get: operations["effective_request_diagnostic_v1_system_network_effective_request_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/system/network/rollback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Rollback Network Configuration */
-        post: operations["rollback_network_configuration_v1_system_network_rollback_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/system/network/stage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Stage Network Configuration */
-        put: operations["stage_network_configuration_v1_system_network_stage_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/system/network/test": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Test Network Configuration */
-        post: operations["test_network_configuration_v1_system_network_test_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4219,91 +4151,25 @@ export interface components {
             /** Name */
             name?: string | null;
         };
-        /** NetworkCheckResponse */
-        NetworkCheckResponse: {
-            /** Detail */
-            detail: string;
-            /** Name */
-            name: string;
-            /** Status */
-            status: string;
-        };
-        /** NetworkConfigurationRequest */
-        NetworkConfigurationRequest: {
-            /** Access Mode */
-            access_mode: string;
-            /** Acme Email */
-            acme_email?: string | null;
-            /** Canonical Url */
-            canonical_url: string;
-            /** Certificate Mode */
-            certificate_mode: string;
-            /** Cloudflare Api Token */
-            cloudflare_api_token?: string | null;
-            /** Dns Provider */
-            dns_provider?: string | null;
-            /** Dns Zone */
-            dns_zone?: string | null;
-            /**
-             * Forward Auth Enabled
-             * @default false
-             */
-            forward_auth_enabled: boolean;
-            /** Internal Url */
-            internal_url?: string | null;
-            /**
-             * Internet Exposure Confirmed
-             * @default false
-             */
-            internet_exposure_confirmed: boolean;
-            /** Trusted Proxy Cidrs */
-            trusted_proxy_cidrs?: string[];
-        };
         /** NetworkConfigurationResponse */
         NetworkConfigurationResponse: {
             /** Access Mode */
             access_mode: string;
-            /** Acme Email */
-            acme_email: string | null;
             /** Canonical Url */
             canonical_url: string;
             /** Certificate Mode */
             certificate_mode: string;
-            /** Cloudflare Configured */
-            cloudflare_configured: boolean;
-            /** Dns Provider */
-            dns_provider: string | null;
-            /** Dns Zone */
-            dns_zone: string | null;
             /** Forward Auth Enabled */
             forward_auth_enabled: boolean;
             /** Internal Url */
             internal_url: string | null;
-            /** Internet Exposure Confirmed */
-            internet_exposure_confirmed: boolean;
             /** Trusted Proxy Cidrs */
             trusted_proxy_cidrs: string[];
         };
         /** NetworkStatusResponse */
         NetworkStatusResponse: {
-            active: components["schemas"]["NetworkConfigurationResponse"];
-            /** Canonical Change Warning */
-            canonical_change_warning: boolean;
             certificate: components["schemas"]["CertificateStatusResponse"];
-            last_known_good: components["schemas"]["NetworkConfigurationResponse"] | null;
-            last_test: components["schemas"]["NetworkTestResponse"] | null;
-            /** Revision */
-            revision: number;
-            staged: components["schemas"]["NetworkConfigurationResponse"] | null;
-        };
-        /** NetworkTestResponse */
-        NetworkTestResponse: {
-            /** Checks */
-            checks: components["schemas"]["NetworkCheckResponse"][];
-            /** Ready */
-            ready: boolean;
-            /** Tested At */
-            tested_at: string;
+            configuration: components["schemas"]["NetworkConfigurationResponse"];
         };
         /** NetWorthAccountResponse */
         NetWorthAccountResponse: {
@@ -10732,26 +10598,6 @@ export interface operations {
             };
         };
     };
-    apply_network_configuration_v1_system_network_apply_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NetworkStatusResponse"];
-                };
-            };
-        };
-    };
     export_caddy_root_v1_system_network_caddy_root_get: {
         parameters: {
             query?: never;
@@ -10788,79 +10634,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EffectiveRequestResponse"];
-                };
-            };
-        };
-    };
-    rollback_network_configuration_v1_system_network_rollback_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NetworkStatusResponse"];
-                };
-            };
-        };
-    };
-    stage_network_configuration_v1_system_network_stage_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NetworkConfigurationRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NetworkStatusResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    test_network_configuration_v1_system_network_test_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NetworkTestResponse"];
                 };
             };
         };
