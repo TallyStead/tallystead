@@ -2,6 +2,22 @@
 
 All notable changes to the Tallystead server, API contract, workers, and supported household deployment are recorded here.
 
+## [0.2.2] - Unreleased
+
+### Fixed
+
+- Production and local Compose now pass the same non-secret network configuration to the worker as the API, preventing startup validation failures when public and internal URLs are configured.
+- The API accepts any hostname routed through Caddy instead of enforcing configured public/internal identities or requiring a browser-origin allowlist.
+- Passkeys, password-recovery links, and server identity use the current trusted request origin rather than one deployment-wide canonical URL.
+- Direct clients on the private HTTP ingress use normal Tallystead authentication; Pangolin identity headers remain trusted only from configured proxy addresses and are stripped for every other source.
+- The versioned Caddy image embeds its tested private HTTP ingress configuration, eliminating the production host Caddyfile bind mount; the server bundle carries both Pangolin deployment overlays.
+- The base Compose deployment publishes the configurable private HTTP ingress directly, so remote Pangolin deployments no longer require an extra host-port overlay.
+
+### Compatibility
+
+- This server patch pins `tallystead-web:0.2.2`, which automatically uses the origin from which it was loaded.
+- Existing `0.2.1` databases require no additional migration for this patch.
+
 ## [0.2.1] - Unreleased
 
 ### Changed

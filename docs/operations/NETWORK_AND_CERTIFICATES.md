@@ -1,38 +1,32 @@
 # Network and certificate operations
 
-Tallystead network configuration is owned by the installation's `.env` file and Docker Compose. The application does not store or rewrite routing, certificate, origin, or trusted-proxy settings in PostgreSQL. The authenticated Server page is read-only and reports the loaded environment, certificate, service health, and sanitized connection details.
+Tallystead routes by connection rather than by a configured application identity. The same server may be reached through an IP address, a public proxy hostname, and an optional local hostname. Hostnames affect DNS, TLS, cookies, and passkey scope; they do not select a different household or authorize a request.
 
-See the [network configuration reference](NETWORK_CONFIGURATION_REFERENCE.md) for every variable and complete Pangolin recipes.
+See the [network configuration reference](NETWORK_CONFIGURATION_REFERENCE.md) for the small set of optional deployment variables.
 
 ## Connection paths
 
-### Direct local HTTPS
-
 ```text
-Browser -> HTTPS hostname -> Caddy -> web/API
+Direct client -> Caddy HTTP or optional local HTTPS -> web/API
+Browser -> HTTPS Pangolin -> private Caddy HTTP :8080 -> web/API
 ```
 
-Caddy issues a certificate from its local CA for `TALLYSTEAD_SERVER_HOST`. Set `TALLYSTEAD_PUBLIC_URL` to the complete URL household clients use and trust Caddy's exported root certificate on those devices.
+The bundled web client uses the origin from which it was loaded. A standalone client may select another API URL. CORS does not use a deployment allowlist; standalone requests use explicit bearer tokens and never credentialed cross-origin cookies.
 
-### Pangolin with external HTTPS
+Port 8080 accepts ordinary clients with normal Tallystead authentication. Only a source in `TALLYSTEAD_TRUSTED_PROXY_CIDRS` can supply Pangolin identity, and Caddy strips forwarded identity headers from every other source before proxying to the API.
 
-```text
-Browser -> HTTPS Pangolin -> restricted HTTP Caddy :8080 -> web/API
-```
+## Certificates and passkeys
 
-The HTTP hop is acceptable only on a private Docker network or a trusted LAN path restricted to the Pangolin/Newt source. Caddy rejects port-8080 connections outside `TALLYSTEAD_TRUSTED_PROXY_CIDRS`. For accepted connections, Caddy preserves Pangolin's forwarded HTTPS scheme and public host. The API independently requires Caddy's private transport secret before those values become authoritative.
+Pangolin owns TLS for public hostnames. Caddy can provide optional direct-local HTTPS for `TALLYSTEAD_SERVER_HOST` using its local CA. Trust that root certificate on local devices before using the local HTTPS address.
 
-Do not expose port 8080 to the internet. Do not target `web:3000`, because doing so bypasses API routing and security headers.
+Passkeys are created and verified against the hostname used for that ceremony. Because browsers scope passkeys and local storage by origin, a household may need separate passkey enrollment and sign-in sessions for different aliases. Password authentication remains available.
 
 ## Applying and recovering changes
 
-Edit `.env`, validate it, and recreate API and Caddy:
+The Caddyfile is embedded in the versioned Caddy image; production does not mount a host copy. Edit `.env` only for bind addresses, trusted proxy sources, optional forwarded authentication, direct-local HTTPS, and secrets, then recreate the relevant services:
 
 ```sh
-./validate-network-config.sh .env
-docker compose --env-file .env -f compose.yaml up -d --force-recreate api caddy
+docker compose --env-file .env up -d --force-recreate api caddy
 ```
 
-There is no database network setting to reset. If a value is wrong, correct `.env` from the host console and recreate the two services. The base Compose deployment retains direct HTTPS even when `compose.pangolin-host.yaml` publishes the restricted proxy ingress.
-
-Changing `TALLYSTEAD_PUBLIC_URL` changes the passkey relying-party origin and generated-link identity. Existing passkeys may need to be enrolled again after a hostname change.
+No database or browser setting can make an otherwise routed hostname fail API identity matching. Use Settings → Server to inspect the effective current connection.

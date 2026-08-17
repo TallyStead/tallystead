@@ -95,7 +95,7 @@ from app.net_worth import (
     latest_valuation,
     validate_planner_eligibility,
 )
-from app.networking import active_configuration, canonical_url, trusted_forward_auth_source
+from app.networking import active_configuration, current_request_origin, trusted_forward_auth_source
 from app.object_store import get_object, put_object, remove_object
 from app.obligations import (
     bill_instance_response,
@@ -224,9 +224,9 @@ ledger_writer = require_roles(Role.OWNER, Role.MANAGER)
 
 
 @router.get("/server/identity", response_model=ServerIdentityResponse, tags=["system"])
-def server_identity(db: DbSession) -> ServerIdentityResponse:
+def server_identity(request: Request) -> ServerIdentityResponse:
     """Public, non-sensitive metadata used during client server connection."""
-    return ServerIdentityResponse(public_url=canonical_url(db), api_version="v1")
+    return ServerIdentityResponse(public_url=current_request_origin(request), api_version="v1")
 
 
 def session_response(
@@ -371,12 +371,12 @@ def remove_proxy_link(db: DbSession, actor: Annotated[User, Depends(current_user
 
 
 @router.post("/auth/password-reset/request", status_code=status.HTTP_204_NO_CONTENT, tags=["auth"])
-def request_password_reset(request: PasswordResetRequest, db: DbSession) -> None:
-    user = db.scalar(select(User).where(User.email == request.email.lower(), User.is_active.is_(True)))
+def request_password_reset(payload: PasswordResetRequest, request: Request, db: DbSession) -> None:
+    user = db.scalar(select(User).where(User.email == payload.email.lower(), User.is_active.is_(True)))
     if user is not None:
         membership = db.scalar(select(Membership).where(Membership.user_id == user.id))
         try:
-            sent = send_password_reset(db, user)
+            sent = send_password_reset(db, user, current_request_origin(request))
             action = "auth.password_reset_email_sent" if sent else "auth.password_reset_email_unavailable"
         except (OSError, smtplib.SMTPException):
             action = "auth.password_reset_email_failed"
@@ -400,38 +400,39 @@ def finish_password_reset(request: PasswordResetFinishRequest, db: DbSession) ->
 
 @router.post("/auth/passkeys/register/options", response_model=PasskeyOptionsResponse, tags=["auth"])
 def passkey_registration_options(
-    db: DbSession, user: Annotated[User, Depends(current_user)]
+    request: Request, db: DbSession, user: Annotated[User, Depends(current_user)]
 ) -> PasskeyOptionsResponse:
-    ceremony, public_key = registration_options(db, user)
+    ceremony, public_key = registration_options(db, user, current_request_origin(request))
     return PasskeyOptionsResponse(ceremony_id=ceremony.id, public_key=public_key)
 
 
 @router.post("/auth/passkeys/register/finish", response_model=PasskeyResponse, tags=["auth"])
 def passkey_registration_finish(
-    request: PasskeyRegistrationFinishRequest,
+    payload: PasskeyRegistrationFinishRequest,
+    request: Request,
     db: DbSession,
     user: Annotated[User, Depends(current_user)],
     membership: Annotated[Membership, Depends(current_membership)],
 ) -> PasskeyResponse:
-    passkey = finish_registration(db, user, request.ceremony_id, request.credential)
+    passkey = finish_registration(db, user, payload.ceremony_id, payload.credential, current_request_origin(request))
     db.add(AuditEvent(household_id=membership.household_id, actor_user_id=user.id, action="auth.passkey_registered", resource_type="passkey", resource_id=str(passkey.id)))
     db.commit()
     return PasskeyResponse(passkey_id=passkey.id, created_at=passkey.created_at.isoformat(), last_used_at=None)
 
 
 @router.post("/auth/passkeys/login/options", response_model=PasskeyOptionsResponse, tags=["auth"])
-def passkey_login_options(request: PasskeyLoginOptionsRequest, db: DbSession) -> PasskeyOptionsResponse:
-    user = db.scalar(select(User).where(User.email == request.email.lower(), User.is_active.is_(True)))
+def passkey_login_options(payload: PasskeyLoginOptionsRequest, request: Request, db: DbSession) -> PasskeyOptionsResponse:
+    user = db.scalar(select(User).where(User.email == payload.email.lower(), User.is_active.is_(True)))
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No passkey is registered for this account")
-    ceremony, public_key = authentication_options(db, user)
+    ceremony, public_key = authentication_options(db, user, current_request_origin(request))
     return PasskeyOptionsResponse(ceremony_id=ceremony.id, public_key=public_key)
 
 
 @router.post("/auth/passkeys/login/finish", response_model=SessionResponse, tags=["auth"])
-def passkey_login_finish(request: PasskeyLoginFinishRequest, db: DbSession) -> SessionResponse:
-    user = finish_authentication(db, request.ceremony_id, request.credential)
-    return session_response(db, user, request.device_name)
+def passkey_login_finish(payload: PasskeyLoginFinishRequest, request: Request, db: DbSession) -> SessionResponse:
+    user = finish_authentication(db, payload.ceremony_id, payload.credential, current_request_origin(request))
+    return session_response(db, user, payload.device_name)
 
 
 @router.get("/auth/passkeys", response_model=list[PasskeyResponse], tags=["auth"])

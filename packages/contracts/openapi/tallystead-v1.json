@@ -8021,7 +8021,7 @@
   },
   "info": {
     "title": "Tallystead API",
-    "version": "0.2.1"
+    "version": "0.2.2"
   },
   "openapi": "3.1.0",
   "paths": {

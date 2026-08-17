@@ -168,12 +168,27 @@ def test_owner_can_create_export_delete_restore_and_reset_demo_household() -> No
     assert removed.json()["summary"]["transaction_count"] == 0
 
 
-def test_server_identity_exposes_canonical_local_url() -> None:
-    response = TestClient(app).get("/v1/server/identity")
+def test_server_identity_uses_the_current_routed_host() -> None:
+    response = TestClient(app).get("/v1/server/identity", headers={"Host": "10.10.200.204"})
 
     assert response.status_code == 200
-    assert response.json()["public_url"].startswith("https://")
+    assert response.json()["public_url"] == "http://10.10.200.204"
     assert response.json()["api_version"] == "v1"
+
+
+def test_standalone_browser_origin_can_use_bearer_api_without_configured_allowlist() -> None:
+    client = TestClient(app)
+    origin = "https://standalone.example.test"
+    preflight = client.options(
+        "/v1/setup/status",
+        headers={"Origin": origin, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "Authorization"},
+    )
+    assert preflight.status_code == 204
+    assert preflight.headers["access-control-allow-origin"] == origin
+    response = client.get("/v1/setup/status", headers={"Origin": origin})
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "access-control-allow-credentials" not in response.headers
 
 
 def test_network_configuration_is_read_only_and_environment_owned(monkeypatch) -> None:
@@ -196,7 +211,7 @@ def test_network_configuration_is_read_only_and_environment_owned(monkeypatch) -
         "forward_auth_enabled": True, "certificate_mode": "external_tls",
     }
     assert client.put("/v1/system/network/stage", headers=headers, json={}).status_code == 404
-    assert client.get("/v1/server/identity").json()["public_url"] == "https://ledger.example.test"
+    assert client.get("/v1/server/identity").json()["public_url"] == "http://testserver"
 
 
 def test_phase6a_forwarded_headers_require_caddy_network_and_shared_secret(monkeypatch) -> None:
@@ -532,7 +547,7 @@ def test_passkey_options_and_owned_credential_management() -> None:
 
     options = client.post("/v1/auth/passkeys/register/options", headers=headers)
     assert options.status_code == 200
-    assert options.json()["public_key"]["rp"]["id"] == "localhost"
+    assert options.json()["public_key"]["rp"]["id"] == "testserver"
     with TestSession() as db:
         passkey = PasskeyCredential(user_id=UUID(owner["user_id"]), credential_id="test-credential", public_key="test-public-key", sign_count=0)
         db.add(passkey)

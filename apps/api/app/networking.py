@@ -13,7 +13,7 @@ from app.config import settings
 
 def environment_configuration() -> dict:
     return {
-        "canonical_url": settings.public_url.rstrip("/"),
+        "canonical_url": settings.public_url.rstrip("/") if settings.public_url else "Automatic (current connection)",
         "internal_url": settings.internal_url.rstrip("/") if settings.internal_url else None,
         "access_mode": settings.access_mode,
         "trusted_proxy_cidrs": settings.proxy_cidrs,
@@ -28,7 +28,7 @@ def active_configuration(_db=None) -> dict:
 
 
 def canonical_url(_db=None) -> str:
-    return settings.public_url.rstrip("/")
+    return settings.public_url.rstrip("/") if settings.public_url else ""
 
 
 def client_in_cidrs(client_ip: str | None, cidrs: list[str]) -> bool:
@@ -46,7 +46,6 @@ def trusted_forward_auth_source(source: str | None, config: dict | None = None) 
     return bool(
         source
         and config.get("forward_auth_enabled")
-        and config.get("access_mode") == "reverse_proxy"
         and client_in_cidrs(source, config.get("trusted_proxy_cidrs", []))
     )
 
@@ -91,6 +90,13 @@ def effective_request(client_ip: str | None, headers: dict[str, str], _config: d
     return EffectiveRequest(client_ip=source, scheme=scheme, host=host, forwarded_headers_trusted=trusted)
 
 
+def current_request_origin(request) -> str:
+    effective = getattr(request.state, "effective_request", None)
+    if effective is None or not effective.host:
+        return str(request.base_url).rstrip("/")
+    return f"{effective.scheme}://{effective.host}".rstrip("/")
+
+
 class UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, socket_path: str, timeout: float = 8):
         super().__init__("localhost", timeout=timeout)
@@ -123,7 +129,10 @@ caddy = CaddyController()
 
 
 def live_certificate() -> dict | None:
-    host = urlparse(settings.internal_url or settings.public_url).hostname
+    configured_url = settings.internal_url or settings.public_url
+    host = settings.server_host or (urlparse(configured_url).hostname if configured_url else None)
+    if not host:
+        return None
     if not host:
         return None
     context = ssl.create_default_context()

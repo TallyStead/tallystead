@@ -15,3 +15,4 @@ FROM caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95a
 
 RUN apk --no-cache --no-check-certificate upgrade c-ares curl libcurl
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+COPY infrastructure/compose/Caddyfile /etc/caddy/Caddyfile
