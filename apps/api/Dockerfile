@@ -4,6 +4,9 @@
 FROM python:3.12-slim@sha256:dd29372629eeba2dd003fd9e9d35a5b8236c44727875a0364254b5127af88e65
 
 WORKDIR /app
+RUN apt-get update \
+    && apt-get upgrade --yes \
+    && rm -rf /var/lib/apt/lists/*
 COPY apps/api/pyproject.toml ./pyproject.toml
 # Temporary home-server build workaround for environments that intercept PyPI TLS.
 # Replace with the trusted local CA before any production deployment.
