@@ -5,11 +5,12 @@ import io
 import json
 import smtplib
 import socket
-from datetime import date, timedelta
+from collections import Counter
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 from urllib.parse import quote
 from urllib.request import urlopen
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, func, or_, select, text
@@ -173,6 +174,8 @@ from app.schemas import (
     MemberResponse,
     MemberRoleRequest,
     MerchantCreateRequest,
+    MerchantProfileResponse,
+    MerchantProfileSummaryResponse,
     MerchantResponse,
     MerchantUpdateRequest,
     NetWorthAccountResponse,
@@ -1009,6 +1012,135 @@ def update_category(
 def list_merchants(db: DbSession, membership: Annotated[Membership, Depends(current_membership)]) -> list[MerchantResponse]:
     merchants = db.scalars(select(Merchant).where(Merchant.household_id == membership.household_id).order_by(Merchant.is_archived, Merchant.name)).all()
     return [merchant_response(db, item) for item in merchants]
+
+
+def _payee_profile_id(household_id: UUID, payee_key: str) -> UUID:
+    return uuid5(NAMESPACE_URL, f"tallystead:{household_id}:payee:{payee_key}")
+
+
+def _merchant_profile_directory(db: DbSession, household_id: UUID) -> list[MerchantProfileSummaryResponse]:
+    merchants = db.scalars(select(Merchant).where(Merchant.household_id == household_id)).all()
+    aliases = db.scalars(select(MerchantAlias).where(MerchantAlias.household_id == household_id)).all()
+    aliases_by_merchant: dict[UUID, list[str]] = {merchant.id: [] for merchant in merchants}
+    merchant_by_payee = {merchant.name.strip().casefold(): merchant for merchant in merchants}
+    for alias in aliases:
+        aliases_by_merchant.setdefault(alias.merchant_id, []).append(alias.alias)
+        merchant = next((item for item in merchants if item.id == alias.merchant_id), None)
+        if merchant:
+            merchant_by_payee[alias.alias.strip().casefold()] = merchant
+    transactions = db.scalars(select(LedgerTransaction).where(
+        LedgerTransaction.household_id == household_id,
+        LedgerTransaction.voided_at.is_(None),
+    )).all()
+    transaction_ids = {transaction.id for transaction in transactions}
+    transfer_ids: set[UUID] = set()
+    if transaction_ids:
+        for link in db.scalars(select(TransferLink).where(
+            (TransferLink.from_transaction_id.in_(transaction_ids)) | (TransferLink.to_transaction_id.in_(transaction_ids))
+        )):
+            transfer_ids.update((link.from_transaction_id, link.to_transaction_id))
+    normalized_counts: Counter[UUID] = Counter()
+    raw_names: dict[str, Counter[str]] = {}
+    for transaction in transactions:
+        if transaction.id in transfer_ids or transaction.activity_type == "external_owned_transfer" or transaction.reversal_of_transaction_id or transaction.status == "reversed":
+            continue
+        payee = (transaction.payee or transaction.raw_payee or "").strip()
+        payee_key = payee.casefold()
+        linked = next((item for item in merchants if item.id == transaction.merchant_id), None) if transaction.merchant_id else None
+        linked = linked or merchant_by_payee.get(payee_key)
+        if linked:
+            normalized_counts[linked.id] += 1
+        elif payee_key:
+            raw_names.setdefault(payee_key, Counter())[payee] += 1
+    result = [
+        MerchantProfileSummaryResponse(
+            profile_id=merchant.id, merchant_id=merchant.id, name=merchant.name,
+            aliases=sorted(aliases_by_merchant.get(merchant.id, [])), is_normalized=True,
+            is_archived=merchant.is_archived, transaction_count=normalized_counts[merchant.id],
+        )
+        for merchant in merchants
+    ]
+    for payee_key, names in raw_names.items():
+        name = names.most_common(1)[0][0]
+        result.append(MerchantProfileSummaryResponse(
+            profile_id=_payee_profile_id(household_id, payee_key), merchant_id=None, name=name,
+            aliases=sorted(value for value in names if value != name), is_normalized=False,
+            is_archived=False, transaction_count=sum(names.values()),
+        ))
+    return sorted(result, key=lambda item: (item.is_archived, item.name.casefold()))
+
+
+@router.get("/ledger/merchant-profiles", response_model=list[MerchantProfileSummaryResponse], tags=["ledger"])
+def list_merchant_profiles(db: DbSession, membership: Annotated[Membership, Depends(current_membership)]) -> list[MerchantProfileSummaryResponse]:
+    return _merchant_profile_directory(db, membership.household_id)
+
+
+def _merchant_profile_report(
+    profile: MerchantProfileSummaryResponse, db: DbSession, household_id: UUID, start: date, end: date,
+    currency_code: str, ownership_scope: str, include_pending: bool,
+) -> MerchantProfileResponse:
+    payee_keys = tuple({profile.name.strip().casefold(), *(alias.strip().casefold() for alias in profile.aliases)})
+    report = spending_report(db, household_id, ReportFilters(
+        date_from=start, date_to=end, currency_code=currency_code, ownership_scope=ownership_scope,
+        include_pending=include_pending, merchant_id=profile.merchant_id,
+        payee_key=None if profile.is_normalized else profile.name.strip().casefold(),
+        merchant_payee_keys=payee_keys if profile.is_normalized else (),
+    ))
+    rows = report["transactions"]
+    purchases = [item for item in rows if item["classification"] in {"spending", "debt_payment"}]
+    refunds = [item for item in rows if item["classification"] == "refund"]
+    dates = [date.fromisoformat(item["transaction_date"]) for item in rows]
+    return MerchantProfileResponse(
+        merchant=profile, rule_version=report["rule_version"], date_from=start, date_to=end,
+        currency_code=currency_code, totals=report["totals"], transaction_count=len(rows),
+        purchase_count=len(purchases), refund_count=len(refunds),
+        average_purchase_minor=(sum(item["report_amount_minor"] for item in purchases) // len(purchases)) if purchases else 0,
+        first_transaction_date=min(dates) if dates else None, last_transaction_date=max(dates) if dates else None,
+        monthly_spending=report["monthly_spending"], by_category=report["by_category"],
+        by_account=report["by_account"], transactions=list(reversed(rows)), warnings=report["signals"]["warnings"],
+    )
+
+
+@router.get("/ledger/merchant-profiles/{profile_id}", response_model=MerchantProfileResponse, tags=["ledger"])
+def calculated_merchant_profile(
+    profile_id: UUID, db: DbSession, membership: Annotated[Membership, Depends(current_membership)],
+    date_from: date | None = None, date_to: date | None = None,
+    currency_code: Annotated[str, Query(pattern="^(USD|CAD|MXN)$")] = "USD",
+    ownership_scope: Annotated[str, Query(pattern="^(household|business|all)$")] = "household",
+    include_pending: bool = False,
+) -> MerchantProfileResponse:
+    profile = next((item for item in _merchant_profile_directory(db, membership.household_id) if item.profile_id == profile_id), None)
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Merchant profile not found")
+    end = date_to or datetime.now(UTC).date()
+    start = date_from or (end - timedelta(days=364))
+    if start > end:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="date_from must be on or before date_to")
+    return _merchant_profile_report(profile, db, membership.household_id, start, end, currency_code, ownership_scope, include_pending)
+
+
+@router.get("/ledger/merchants/{merchant_id}/profile", response_model=MerchantProfileResponse, tags=["ledger"])
+def merchant_profile(
+    merchant_id: UUID,
+    db: DbSession,
+    membership: Annotated[Membership, Depends(current_membership)],
+    date_from: date | None = None,
+    date_to: date | None = None,
+    currency_code: Annotated[str, Query(pattern="^(USD|CAD|MXN)$")] = "USD",
+    ownership_scope: Annotated[str, Query(pattern="^(household|business|all)$")] = "household",
+    include_pending: bool = False,
+) -> MerchantProfileResponse:
+    merchant = household_merchant(db, membership.household_id, merchant_id)
+    end = date_to or datetime.now(UTC).date()
+    start = date_from or (end - timedelta(days=364))
+    if start > end:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="date_from must be on or before date_to")
+    normalized = merchant_response(db, merchant)
+    profile = MerchantProfileSummaryResponse(
+        profile_id=merchant.id, merchant_id=merchant.id, name=merchant.name, aliases=normalized.aliases,
+        is_normalized=True, is_archived=merchant.is_archived, transaction_count=0,
+    )
+    return _merchant_profile_report(profile, db, membership.household_id, start, end, currency_code, ownership_scope, include_pending)
 
 
 @router.post("/ledger/merchants", response_model=MerchantResponse, status_code=status.HTTP_201_CREATED, tags=["ledger"])

@@ -32,6 +32,8 @@ class ReportFilters:
     account_id: UUID | None = None
     category_id: UUID | None = None
     merchant_id: UUID | None = None
+    payee_key: str | None = None
+    merchant_payee_keys: tuple[str, ...] = ()
 
 
 def _period(db: Session, household_id: UUID, filters: ReportFilters) -> dict:
@@ -81,7 +83,10 @@ def _period(db: Session, household_id: UUID, filters: ReportFilters) -> dict:
     counts = {"included": 0, "pending": 0, "uncategorized": 0, "transfers_excluded": 0, "reversals_excluded": 0}
     for item in transactions:
         item_splits = splits_by_transaction.get(item.id, [])
-        if filters.merchant_id and item.merchant_id != filters.merchant_id:
+        item_payee_key = (item.payee or item.raw_payee or "").strip().casefold()
+        if filters.merchant_id and item.merchant_id != filters.merchant_id and item_payee_key not in filters.merchant_payee_keys:
+            continue
+        if filters.payee_key and item_payee_key != filters.payee_key:
             continue
         if filters.category_id and not any(split.category_id == filters.category_id for split, _ in item_splits):
             continue
@@ -189,6 +194,8 @@ def spending_report(db: Session, household_id: UUID, filters: ReportFilters) -> 
         account_id=filters.account_id,
         category_id=filters.category_id,
         merchant_id=filters.merchant_id,
+        payee_key=filters.payee_key,
+        merchant_payee_keys=filters.merchant_payee_keys,
     )
     prior = _period(db, household_id, prior_filters)
     spending_values = [row["report_amount_minor"] for row in current["transactions"] if row["classification"] == "spending"]
@@ -217,6 +224,7 @@ def spending_report(db: Session, household_id: UUID, filters: ReportFilters) -> 
             "include_pending": filters.include_pending, "account_id": str(filters.account_id) if filters.account_id else None,
             "category_id": str(filters.category_id) if filters.category_id else None,
             "merchant_id": str(filters.merchant_id) if filters.merchant_id else None,
+            "payee_key": filters.payee_key,
         },
         "prior_period": {"date_from": prior_filters.date_from.isoformat(), "date_to": prior_filters.date_to.isoformat(), "totals": prior["totals"]},
         **current,

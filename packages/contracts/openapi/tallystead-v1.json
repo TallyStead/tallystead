@@ -5021,6 +5021,131 @@
         "title": "MerchantCreateRequest",
         "type": "object"
       },
+      "MerchantProfileResponse": {
+        "properties": {
+          "average_purchase_minor": {
+            "title": "Average Purchase Minor",
+            "type": "integer"
+          },
+          "by_account": {
+            "items": {
+              "$ref": "#/components/schemas/ReportBreakdownResponse"
+            },
+            "title": "By Account",
+            "type": "array"
+          },
+          "by_category": {
+            "items": {
+              "$ref": "#/components/schemas/ReportBreakdownResponse"
+            },
+            "title": "By Category",
+            "type": "array"
+          },
+          "currency_code": {
+            "title": "Currency Code",
+            "type": "string"
+          },
+          "date_from": {
+            "format": "date",
+            "title": "Date From",
+            "type": "string"
+          },
+          "date_to": {
+            "format": "date",
+            "title": "Date To",
+            "type": "string"
+          },
+          "first_transaction_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Transaction Date"
+          },
+          "last_transaction_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Transaction Date"
+          },
+          "merchant": {
+            "$ref": "#/components/schemas/MerchantResponse"
+          },
+          "monthly_spending": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Monthly Spending",
+            "type": "array"
+          },
+          "purchase_count": {
+            "title": "Purchase Count",
+            "type": "integer"
+          },
+          "refund_count": {
+            "title": "Refund Count",
+            "type": "integer"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ReportTotalsResponse"
+          },
+          "transaction_count": {
+            "title": "Transaction Count",
+            "type": "integer"
+          },
+          "transactions": {
+            "items": {
+              "$ref": "#/components/schemas/ReportTransactionResponse"
+            },
+            "title": "Transactions",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "merchant",
+          "rule_version",
+          "date_from",
+          "date_to",
+          "currency_code",
+          "totals",
+          "transaction_count",
+          "purchase_count",
+          "refund_count",
+          "average_purchase_minor",
+          "first_transaction_date",
+          "last_transaction_date",
+          "monthly_spending",
+          "by_category",
+          "by_account",
+          "transactions",
+          "warnings"
+        ],
+        "title": "MerchantProfileResponse",
+        "type": "object"
+      },
       "MerchantResponse": {
         "properties": {
           "aliases": {
@@ -12804,6 +12929,120 @@
           }
         ],
         "summary": "Update Merchant",
+        "tags": [
+          "ledger"
+        ]
+      }
+    },
+    "/v1/ledger/merchants/{merchant_id}/profile": {
+      "get": {
+        "operationId": "merchant_profile_v1_ledger_merchants__merchant_id__profile_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "merchant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Merchant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "currency_code",
+            "required": false,
+            "schema": {
+              "default": "USD",
+              "pattern": "^(USD|CAD|MXN)$",
+              "title": "Currency Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ownership_scope",
+            "required": false,
+            "schema": {
+              "default": "household",
+              "pattern": "^(household|business|all)$",
+              "title": "Ownership Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_pending",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Pending",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Merchant Profile",
         "tags": [
           "ledger"
         ]

@@ -370,6 +370,16 @@ class MerchantResponse(BaseModel):
     is_archived: bool
 
 
+class MerchantProfileSummaryResponse(BaseModel):
+    profile_id: UUID
+    merchant_id: UUID | None
+    name: str
+    aliases: list[str]
+    is_normalized: bool
+    is_archived: bool
+    transaction_count: int
+
+
 class TransactionSplitRequest(BaseModel):
     category_id: UUID
     amount_minor: int
@@ -1014,6 +1024,26 @@ class ReportTransactionResponse(BaseModel):
     activity_type: str
     classification: str
     categories: list[dict[str, Any]]
+
+
+class MerchantProfileResponse(BaseModel):
+    merchant: MerchantProfileSummaryResponse
+    rule_version: str
+    date_from: date
+    date_to: date
+    currency_code: str
+    totals: ReportTotalsResponse
+    transaction_count: int
+    purchase_count: int
+    refund_count: int
+    average_purchase_minor: int
+    first_transaction_date: date | None
+    last_transaction_date: date | None
+    monthly_spending: list[dict[str, Any]]
+    by_category: list[ReportBreakdownResponse]
+    by_account: list[ReportBreakdownResponse]
+    transactions: list[ReportTransactionResponse]
+    warnings: list[str]
 
 
 class SpendingReportResponse(BaseModel):

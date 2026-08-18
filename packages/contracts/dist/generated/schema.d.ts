@@ -1554,6 +1554,23 @@ export interface paths {
         patch: operations["update_merchant_v1_ledger_merchants__merchant_id__patch"];
         trace?: never;
     };
+    "/v1/ledger/merchants/{merchant_id}/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Merchant Profile */
+        get: operations["merchant_profile_v1_ledger_merchants__merchant_id__profile_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/ledger/net-worth": {
         parameters: {
             query?: never;
@@ -4129,6 +4146,49 @@ export interface components {
             aliases?: string[];
             /** Name */
             name: string;
+        };
+        /** MerchantProfileResponse */
+        MerchantProfileResponse: {
+            /** Average Purchase Minor */
+            average_purchase_minor: number;
+            /** By Account */
+            by_account: components["schemas"]["ReportBreakdownResponse"][];
+            /** By Category */
+            by_category: components["schemas"]["ReportBreakdownResponse"][];
+            /** Currency Code */
+            currency_code: string;
+            /**
+             * Date From
+             * Format: date
+             */
+            date_from: string;
+            /**
+             * Date To
+             * Format: date
+             */
+            date_to: string;
+            /** First Transaction Date */
+            first_transaction_date: string | null;
+            /** Last Transaction Date */
+            last_transaction_date: string | null;
+            merchant: components["schemas"]["MerchantResponse"];
+            /** Monthly Spending */
+            monthly_spending: {
+                [key: string]: unknown;
+            }[];
+            /** Purchase Count */
+            purchase_count: number;
+            /** Refund Count */
+            refund_count: number;
+            /** Rule Version */
+            rule_version: string;
+            totals: components["schemas"]["ReportTotalsResponse"];
+            /** Transaction Count */
+            transaction_count: number;
+            /** Transactions */
+            transactions: components["schemas"]["ReportTransactionResponse"][];
+            /** Warnings */
+            warnings: string[];
         };
         /** MerchantResponse */
         MerchantResponse: {
@@ -8467,6 +8527,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MerchantResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    merchant_profile_v1_ledger_merchants__merchant_id__profile_get: {
+        parameters: {
+            query?: {
+                currency_code?: string;
+                date_from?: string | null;
+                date_to?: string | null;
+                include_pending?: boolean;
+                ownership_scope?: string;
+            };
+            header?: never;
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MerchantProfileResponse"];
                 };
             };
             /** @description Validation Error */

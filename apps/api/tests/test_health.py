@@ -1469,6 +1469,63 @@ def test_phase5a_spending_report_classifies_and_filters_ledger_activity() -> Non
     assert business_report["totals"]["spending_minor"] == 7000
     assert client.get(base.replace("currency_code=USD", "currency_code=CAD"), headers=headers).json()["totals"]["spending_minor"] == 9000
 
+    profile = client.get(
+        f"/v1/ledger/merchants/{merchant['merchant_id']}/profile?date_from=2026-08-01&date_to=2026-08-31&currency_code=USD",
+        headers=headers,
+    )
+    assert profile.status_code == 200
+    merchant_profile = profile.json()
+    assert merchant_profile["merchant"]["name"] == "Neighborhood Market"
+    assert merchant_profile["totals"]["spending_minor"] == 10000
+    assert merchant_profile["transaction_count"] == 2
+    assert merchant_profile["purchase_count"] == 1
+    assert merchant_profile["refund_count"] == 1
+    assert merchant_profile["average_purchase_minor"] == 12000
+    assert merchant_profile["first_transaction_date"] == "2026-08-05"
+    assert merchant_profile["last_transaction_date"] == "2026-08-06"
+    assert {item["name"] for item in merchant_profile["by_category"]} == {"Groceries", "Utilities"}
+    assert client.get(f"/v1/ledger/merchants/{merchant['merchant_id']}/profile?date_from=2026-09-01&date_to=2026-08-01", headers=headers).status_code == 422
+
+
+def test_merchant_profile_directory_includes_unnormalized_payees() -> None:
+    client = TestClient(app)
+    owner = client.post("/v1/setup", json={"household_name": "Home", "email": "owner@example.com", "display_name": "Owner", "password": "a-long-local-test-password"}).json()
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    account = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Checking", "account_type": "checking", "currency_code": "USD"}).json()
+    savings = client.post("/v1/ledger/accounts", headers=headers, json={"name": "Savings", "account_type": "savings", "currency_code": "USD"}).json()
+    categories = client.get("/v1/ledger/categories", headers=headers).json()
+    groceries = next(item for item in categories if item["name"] == "Groceries")
+    for payee, amount, transaction_date in (("RAW MARKET #42", -2500, "2026-08-01"), ("raw market #42", -1500, "2026-08-02")):
+        response = client.post("/v1/ledger/transactions", headers=headers, json={
+            "account_id": account["account_id"], "transaction_date": transaction_date,
+            "amount_minor": amount, "currency_code": "USD", "payee": payee,
+            "splits": [{"category_id": groceries["category_id"], "amount_minor": amount}],
+        })
+        assert response.status_code == 201
+    client.post("/v1/ledger/transfers", headers=headers, json={
+        "from_account_id": account["account_id"], "to_account_id": savings["account_id"],
+        "transaction_date": "2026-08-03", "amount_minor": 1000, "currency_code": "USD",
+    })
+
+    directory = client.get("/v1/ledger/merchant-profiles", headers=headers)
+    assert directory.status_code == 200
+    assert not {"checking", "savings"} & {item["name"].casefold() for item in directory.json()}
+    raw_profile = next(item for item in directory.json() if item["name"].casefold() == "raw market #42")
+    assert raw_profile["merchant_id"] is None
+    assert raw_profile["is_normalized"] is False
+    assert raw_profile["transaction_count"] == 2
+
+    profile = client.get(
+        f"/v1/ledger/merchant-profiles/{raw_profile['profile_id']}?date_from=2026-08-01&date_to=2026-08-31&currency_code=USD",
+        headers=headers,
+    )
+    assert profile.status_code == 200
+    payload = profile.json()
+    assert payload["merchant"]["is_normalized"] is False
+    assert payload["totals"]["spending_minor"] == 4000
+    assert payload["transaction_count"] == 2
+    assert payload["by_category"][0]["name"] == "Groceries"
+
 
 def test_phase5a_report_exports_presets_and_role_policy() -> None:
     client = TestClient(app)
