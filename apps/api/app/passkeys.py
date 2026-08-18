@@ -20,21 +20,19 @@ from webauthn.helpers.structs import (
 )
 
 from app.models import PasskeyChallenge, PasskeyCredential, User, utc_now
-from app.networking import canonical_url
 
 CHALLENGE_TTL_MINUTES = 5
 
 
-def relying_party(db: Session) -> tuple[str, str]:
-    public_url = canonical_url(db)
-    parsed = urlparse(public_url)
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise RuntimeError("The canonical client URL must be a valid HTTPS URL for passkeys")
-    return parsed.hostname, public_url.rstrip("/")
+def relying_party(origin: str) -> tuple[str, str]:
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("The current client origin is not valid for passkeys")
+    return parsed.hostname, origin.rstrip("/")
 
 
-def registration_options(db: Session, user: User) -> tuple[PasskeyChallenge, dict]:
-    rp_id, _ = relying_party(db)
+def registration_options(db: Session, user: User, origin: str) -> tuple[PasskeyChallenge, dict]:
+    rp_id, _ = relying_party(origin)
     credentials = db.scalars(select(PasskeyCredential).where(PasskeyCredential.user_id == user.id)).all()
     options = generate_registration_options(
         rp_id=rp_id,
@@ -59,9 +57,9 @@ def registration_options(db: Session, user: User) -> tuple[PasskeyChallenge, dic
     return ceremony, options_to_json_dict(options)
 
 
-def finish_registration(db: Session, user: User, ceremony_id, credential: dict) -> PasskeyCredential:
+def finish_registration(db: Session, user: User, ceremony_id, credential: dict, origin: str) -> PasskeyCredential:
     ceremony = valid_ceremony(db, ceremony_id, user.id, "register")
-    rp_id, origin = relying_party(db)
+    rp_id, origin = relying_party(origin)
     try:
         verified = verify_registration_response(
             credential=credential,
@@ -89,8 +87,8 @@ def finish_registration(db: Session, user: User, ceremony_id, credential: dict) 
     return passkey
 
 
-def authentication_options(db: Session, user: User) -> tuple[PasskeyChallenge, dict]:
-    rp_id, _ = relying_party(db)
+def authentication_options(db: Session, user: User, origin: str) -> tuple[PasskeyChallenge, dict]:
+    rp_id, _ = relying_party(origin)
     credentials = db.scalars(select(PasskeyCredential).where(PasskeyCredential.user_id == user.id)).all()
     if not credentials:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No passkey is registered for this account")
@@ -110,7 +108,7 @@ def authentication_options(db: Session, user: User) -> tuple[PasskeyChallenge, d
     return ceremony, options_to_json_dict(options)
 
 
-def finish_authentication(db: Session, ceremony_id, credential: dict) -> User:
+def finish_authentication(db: Session, ceremony_id, credential: dict, origin: str) -> User:
     ceremony = db.get(PasskeyChallenge, ceremony_id)
     if ceremony is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passkey ceremony is invalid")
@@ -119,7 +117,7 @@ def finish_authentication(db: Session, ceremony_id, credential: dict) -> User:
     passkey = db.scalar(select(PasskeyCredential).where(PasskeyCredential.credential_id == credential_id, PasskeyCredential.user_id == ceremony.user_id))
     if passkey is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Passkey is not registered")
-    rp_id, origin = relying_party(db)
+    rp_id, origin = relying_party(origin)
     try:
         verified = verify_authentication_response(
             credential=credential,

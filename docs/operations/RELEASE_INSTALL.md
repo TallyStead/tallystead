@@ -1,6 +1,6 @@
 # Install a Tallystead server release
 
-Use the server bundle attached to a Tallystead GitHub Release. It contains the release Compose file, Caddy configuration, an environment template, and the operational guides needed by a self-hosted installation. It does not contain household data, credentials, private keys, or container images.
+Use the server bundle attached to a Tallystead GitHub Release. It contains the release Compose file, an environment template, and the operational guides needed by a self-hosted installation. The versioned Caddy image embeds its tested configuration, so production installations do not maintain or mount a separate host Caddyfile. The bundle does not contain household data, credentials, private keys, or container images.
 
 ## Verify and prepare
 
@@ -12,7 +12,7 @@ Use the server bundle attached to a Tallystead GitHub Release. It contains the r
    ```
 
 3. Extract the archive and enter its directory.
-4. Copy `.env.example` to `.env`. Replace every `replace-with-...` value with a different long random secret. Set the stable LAN hostname and port, then make `TALLYSTEAD_PUBLIC_URL` and `TALLYSTEAD_ALLOWED_ORIGINS` match the exact browser origin (omit `:443` when using the default HTTPS port). Keep this file outside source control.
+4. Copy `.env.example` to `.env`. Replace every `replace-with-...` value with a different long random secret. Set the optional direct-local HTTPS hostname and choose where the private HTTP ingress binds. No public URL, internal URL, access mode, certificate mode, or browser-origin list is required. Keep this file outside source control.
 5. If the GitHub Container Registry packages are private, authenticate Docker with a GitHub personal access token that has `read:packages`. Public packages do not require this step.
 
 The server release version and tested `TALLYSTEAD_WEB_IMAGE` are already written into `.env.example`. Do not change either during initial installation. The web image is released independently and therefore may have a different semantic version from the server images.

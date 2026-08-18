@@ -16,8 +16,9 @@ class Settings(BaseSettings):
     object_store_bucket: str = "tallystead-documents"
     max_document_bytes: int = 15_000_000
     secret_key: str = "development-only-change-me"
-    allowed_origins: str = "https://localhost:8443,http://localhost:3001,http://localhost:3000"
-    public_url: str = "https://localhost:8443"
+    server_host: str | None = None
+    allowed_origins: str = "http://localhost:3000,http://localhost:3001"
+    public_url: str | None = None
     internal_url: str | None = None
     access_mode: str = "lan"
     trusted_proxy_cidrs: str = ""
@@ -37,32 +38,18 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_network_environment(self):
-        public = urlparse(self.public_url)
-        if public.scheme != "https" or not public.hostname:
-            raise ValueError("TALLYSTEAD_PUBLIC_URL must be a complete HTTPS URL")
-        if self.internal_url:
-            internal = urlparse(self.internal_url)
-            if internal.scheme != "https" or not internal.hostname:
-                raise ValueError("TALLYSTEAD_INTERNAL_URL must be empty or a complete HTTPS URL")
-        if self.access_mode not in {"lan", "reverse_proxy", "vpn", "internet"}:
-            raise ValueError("TALLYSTEAD_ACCESS_MODE is not supported")
-        if self.certificate_mode not in {"local_ca", "external_tls"}:
-            raise ValueError("TALLYSTEAD_CERTIFICATE_MODE must be local_ca or external_tls")
+        for label, value in (("TALLYSTEAD_PUBLIC_URL", self.public_url), ("TALLYSTEAD_INTERNAL_URL", self.internal_url)):
+            if value:
+                parsed = urlparse(value)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                    raise ValueError(f"{label} must be empty or a complete HTTP(S) URL")
         for value in self.proxy_cidrs:
             try:
                 ipaddress.ip_network(value, strict=False)
             except ValueError as exc:
                 raise ValueError(f"Invalid trusted proxy CIDR: {value}") from exc
-        if self.access_mode == "reverse_proxy" and not self.proxy_cidrs:
-            raise ValueError("Reverse-proxy mode requires TALLYSTEAD_TRUSTED_PROXY_CIDRS")
-        if self.forward_auth_enabled and self.access_mode != "reverse_proxy":
-            raise ValueError("Forwarded authentication requires reverse-proxy mode")
-        configured_origins = {origin.rstrip("/") for origin in self.cors_origins}
-        required_origins = {self.public_url.rstrip("/")}
-        if self.internal_url:
-            required_origins.add(self.internal_url.rstrip("/"))
-        if not required_origins.issubset(configured_origins):
-            raise ValueError("TALLYSTEAD_ALLOWED_ORIGINS must include the public and internal URLs")
+        if self.forward_auth_enabled and not self.proxy_cidrs:
+            raise ValueError("Forwarded authentication requires TALLYSTEAD_TRUSTED_PROXY_CIDRS")
         return self
 
     @property

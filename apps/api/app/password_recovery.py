@@ -7,11 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.mailer import send_message, tallystead_message
 from app.models import PasswordResetToken, User, utc_now
-from app.networking import canonical_url
 from app.settings_store import load_integrations
 
 
-def send_password_reset(db: Session, user: User) -> bool:
+def send_password_reset(db: Session, user: User, base_url: str) -> bool:
     values = load_integrations(db)
     host = values.get("smtp_host")
     password = values.get("smtp_password")
@@ -27,7 +26,7 @@ def send_password_reset(db: Session, user: User) -> bool:
         )
     )
     db.commit()
-    reset_url = f"{canonical_url(db)}/?reset_token={raw_token}"
+    reset_url = f"{base_url.rstrip('/')}/?reset_token={raw_token}"
     message = tallystead_message(
         to_address=user.email,
         from_address=from_address,

@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.assistant_routes import router as assistant_router
@@ -8,41 +8,28 @@ from app.config import settings
 from app.data_routes import router as data_router
 from app.ingestion_routes import router as ingestion_router
 from app.network_routes import router as network_router
-from app.networking import (
-    allowed_https_authorities,
-    effective_request,
-    environment_configuration,
-    normalized_https_authority,
-)
+from app.networking import effective_request
 from app.plan_routes import router as plan_router
 from app.routes import obligations_router, router
 
-app = FastAPI(title="Tallystead API", version="0.2.1")
+app = FastAPI(title="Tallystead API", version="0.2.2")
 
 
 @app.middleware("http")
 async def network_boundary(request: Request, call_next):
-    config = environment_configuration()
     headers = {key.lower(): value for key, value in request.headers.items()}
-    effective = effective_request(request.client.host if request.client else None, headers, config)
+    effective = effective_request(request.client.host if request.client else None, headers)
     request.state.effective_request = effective
-    allowed_origins = {settings.public_url.rstrip("/"), *settings.cors_origins, config["canonical_url"].rstrip("/")}
-    if config.get("internal_url"):
-        allowed_origins.add(config["internal_url"].rstrip("/"))
     origin = request.headers.get("origin")
-    if origin and origin.rstrip("/") not in allowed_origins:
-        return JSONResponse(status_code=403, content={"detail": "Origin is not allowed by the canonical server configuration"})
-    if (
-        settings.network_enforcement_enabled
-        and request.url.path.startswith("/v1/")
-        and (normalized_https_authority(effective.host) not in allowed_https_authorities(config) or effective.scheme != "https")
-    ):
-        return JSONResponse(status_code=421, content={"detail": "Request does not match the configured HTTPS server identity"})
-    if request.method == "OPTIONS" and origin:
+    # Authentication uses explicit bearer tokens rather than ambient cookies,
+    # so a separately hosted browser client may call any routed Tallystead host.
+    # Forwarded identity remains protected independently by Caddy source checks.
+    cross_origin_allowed = bool(origin)
+    if request.method == "OPTIONS" and cross_origin_allowed:
         response = Response(status_code=204)
     else:
         response = await call_next(request)
-    if origin and origin.rstrip("/") in allowed_origins:
+    if cross_origin_allowed:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"

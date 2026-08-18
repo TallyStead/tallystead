@@ -22,7 +22,7 @@ See [CHANGELOG.md](CHANGELOG.md) for versioned server, contract, migration, and 
 
 ## Start the local stack
 
-1. Create `.env` in the repository root from `infrastructure/compose/.env.example` and set local secrets. The local `.env` is intentionally ignored by Git. `TALLYSTEAD_WEB_IMAGE` selects the exact independently released web client.
+1. Create `.env` in the repository root from `infrastructure/compose/.env.example` and set local secrets. The local `.env` is intentionally ignored by Git. `TALLYSTEAD_WEB_IMAGE` selects the exact independently released web client. Browser and API addresses are discovered from each request rather than configured as a canonical URL or origin list.
 2. Run `docker compose --env-file .env -f infrastructure/compose/compose.yaml up --build`.
 3. Open Tallystead at `https://localhost:8443`. The web client and API are served through Caddy at one server URL.
 

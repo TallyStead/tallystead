@@ -136,6 +136,8 @@ jobs:
           docker build --file apps/api/Dockerfile --tag tallystead-api:release .
           docker build --file infrastructure/backup/Dockerfile --tag tallystead-backup:release .
           docker build --file infrastructure/compose/Caddy.Dockerfile --tag tallystead-caddy:release .
+          docker run --rm tallystead-caddy:release caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm tallystead-caddy:release caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile --pretty | grep -q '":8080"'
 
       - name: Pull the exact public web image
         run: |
@@ -210,7 +212,6 @@ jobs:
           cp infrastructure/compose/compose.release.yaml "${bundle}/compose.yaml"
           cp infrastructure/compose/compose.pangolin.yaml "${bundle}/compose.pangolin.yaml"
           cp infrastructure/compose/compose.pangolin-host.yaml "${bundle}/compose.pangolin-host.yaml"
-          cp infrastructure/compose/Caddyfile "${bundle}/Caddyfile"
           cp infrastructure/compose/validate-network-config.sh "${bundle}/validate-network-config.sh"
           chmod +x "${bundle}/validate-network-config.sh"
           sed \
